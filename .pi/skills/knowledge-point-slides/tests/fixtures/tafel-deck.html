@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Tafel 斜率怎么取 — 讲解</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; font-size: 20px; font-family: system-ui, sans-serif; }
+  #deck { height: 100vh; }
+  .slide { height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 48px; box-sizing: border-box; }
+  h1 { font-size: 40px; margin: 0 0 24px; }
+  .fig { margin: 0 0 16px; }
+  .formula { font-size: 26px; margin-top: 16px; }
+  .units { font-size: 20px; }
+  details { margin: 8px 0; }
+  .pitfall { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main id="deck">
+
+<section class="slide" data-page="1">
+  <h1>一条 LSV 曲线里只取两个数：截距和斜率</h1>
+  <figure class="fig">
+    <svg viewBox="0 0 800 450"><polyline points="40,400 200,340 360,300 520,280 760,270" fill="none" stroke="#333" stroke-width="3"/></svg>
+    <figcaption>起点：0.1 M KOH，1 mV/s，E 0–0.4 V vs RHE，j 0–50 mA/cm²</figcaption>
+  </figure>
+  <div class="formula" data-eq="1">η = E − E<sub>eq</sub> <span class="units">[mV]</span></div>
+</section>
+
+<section class="slide" data-page="2">
+  <h1>先把 E 换成 η，不同样品的曲线才能放在一张图上</h1>
+  <figure class="fig"><svg viewBox="0 0 800 450"><line x1="80" y1="400" x2="760" y2="400" stroke="#333"/><line x1="80" y1="400" x2="80" y2="40" stroke="#333"/></svg></figure>
+</section>
+
+<section class="slide" data-page="3">
+  <h1>取对数后，指数关系变成一条直线</h1>
+  <figure class="fig"><svg viewBox="0 0 800 450"><line x1="80" y1="400" x2="760" y2="400" stroke="#333"/><polyline points="120,360 300,240 520,150 700,110" fill="none" stroke="#c33" stroke-width="3"/></svg></figure>
+  <div class="formula" data-eq="2">η = b · log(j / j<sub>0</sub>) <span class="units">[mV, mA/cm²]</span></div>
+</section>
+
+<section class="slide" data-page="4">
+  <h1>只取线性段：区间边界由 R² 与电流量级共同决定</h1>
+  <figure class="fig"><svg viewBox="0 0 800 450"><rect x="300" y="140" width="220" height="160" fill="none" stroke="#06c" stroke-dasharray="6 4"/></svg></figure>
+  <div class="formula" data-eq="3">b = dη / d(log j) <span class="units">[mV/dec]</span></div>
+</section>
+
+<section class="slide" data-page="5">
+  <h1>斜率 60 mV/dec 意味着每十倍电流要多 60 mV 过电位</h1>
+  <figure class="fig"><svg viewBox="0 0 800 450"><line x1="80" y1="400" x2="760" y2="400" stroke="#333"/><line x1="200" y1="380" x2="600" y2="180" stroke="#c33" stroke-width="3"/></svg></figure>
+</section>
+
+<section class="slide" data-page="6">
+  <h1>三个最容易错的地方，每一个都会让斜率偏一倍</h1>
+  <ul>
+    <li class="pitfall">错误做法：直接对 E 作图求斜率。现象：不同样品起点不同，斜率随 η 漂移。正确做法：先算 η 再作图。</li>
+    <li class="pitfall">错误做法：取全区间拟合。现象：高电流段受传质影响，R² 掉到 0.9 以下。正确做法：只取线性段并报区间。</li>
+    <li class="pitfall">错误做法：用 log10 与 ln 混算。现象：斜率差 2.303 倍。正确做法：全篇统一 log10 并标注单位 dec。</li>
+  </ul>
+</section>
+
+<section class="slide" data-page="7">
+  <h1>换一个样品，只动截距不动斜率，说明机理没变</h1>
+  <figure class="fig"><svg viewBox="0 0 800 450"><line x1="80" y1="400" x2="760" y2="400" stroke="#333"/><line x1="160" y1="380" x2="560" y2="180" stroke="#c33" stroke-width="3"/><line x1="240" y1="380" x2="640" y2="180" stroke="#06c" stroke-width="3" stroke-dasharray="6 4"/></svg></figure>
+</section>
+
+<section class="slide" data-page="8">
+  <h1>自测：三道题，答完再翻回去核对</h1>
+  <details><summary>1. 计算：η = 300 mV 时 log j 是多少？</summary><p>用式 (2)，b = 60 mV/dec，得 log j = 5.0。</p></details>
+  <details><summary>2. 判断：左右两张拟合图，哪张取错了区间？</summary><p>右图把传质段算进去了，R² 偏低。</p></details>
+  <details><summary>3. 解释：斜率从 60 变成 40 mV/dec 说明什么？</summary><p>速率决定步骤改变，不是数据变好。</p></details>
+</section>
+
+</main>
+<script>
+  const slides = [...document.querySelectorAll('.slide')];
+  let current = 0;
+  function go(step) {
+    current = Math.min(slides.length - 1, Math.max(0, current + step));
+    slides[current].scrollIntoView({ behavior: 'instant' });
+  }
+  addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowRight' || event.key === 'PageDown') go(1);
+    if (event.key === 'ArrowLeft' || event.key === 'PageUp') go(-1);
+  });
+  addEventListener('wheel', (event) => go(event.deltaY > 0 ? 1 : -1), { passive: true });
+</script>
+</body>
+</html>
