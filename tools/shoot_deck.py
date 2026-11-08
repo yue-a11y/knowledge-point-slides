@@ -167,7 +167,10 @@ def main() -> int:
             page.wait_for_timeout(200)
             page.pdf(path=str(shots / "deck-browser.pdf"), width="1600px", height="900px",
                      print_background=True, page_ranges="1-" + str(total))
-            log.append(f"pdf: {shots / 'deck-browser.pdf'}")
+            # deck-print.pdf 就是浏览器打印件（Ctrl+P 同一条路径）：只有它用得上内嵌字体；
+            # weasyprint 的 SVG text 不走 @font-face，会在 PDF 里带进系统字体（实测）。
+            (shots / "deck-print.pdf").write_bytes((shots / "deck-browser.pdf").read_bytes())
+            log.append(f"pdf: {shots / 'deck-browser.pdf'}（另存为 deck-print.pdf）")
             try:
                 import subprocess
 
