@@ -109,6 +109,11 @@ CSS = (
   .recast { font-size: 20px; color: #2c7fb8; margin: 0 0 8px; }
   .fig { margin: 0; text-align: center; }
   .fig svg { display: block; width: 1240px; height: 574px; margin: 0 auto; }
+  /* 同页还有公式/推导时用 class="fig compact"：图让出高度，文字等比放大保持可读 */
+  .fig.compact svg { width: 767px; height: 356px; }
+  .fig.compact svg text { font-size: 30px; }
+  .fig.compact svg text.ax { font-size: 30px; }
+  .fig.compact svg g.dim text { font-size: 28px; }
   figcaption { font-size: 19px; color: #5d6470; margin-top: 2px; }
   /* 公式一律手写体：手写体 + 变量斜体 + 整行 −0.3° + 手绘笔迹下划线。
      倾斜只能挂在 .expr（行内）上：挂到 .formula 会把里面的推导表格一起转，
