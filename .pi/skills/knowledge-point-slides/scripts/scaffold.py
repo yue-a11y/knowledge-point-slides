@@ -69,38 +69,111 @@ outline.json 结构（只列必需项，可省略的用默认值）:
 from __future__ import annotations
 
 import html
+import html as html_mod
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mathrender  # noqa: E402
+
 ASSETS = Path(__file__).resolve().parent / "assets"
 
-# 公式用手写体：子集 woff2（scripts/make_handfont.py 生成）。
-# 取不到子集时退化成 local() 引用链，本机有效、换机器可能失效，check_deck 会 warn。
-HAND_LOCAL = '"LXGW WenKai", "霞鹜文楷", "KaiTi", "STKaiti", cursive'
+# 公式用数学衬线字体（Latin Modern Math 子集，scripts/make_mathfont.py 生成）；
+# 正文用「手写体」（LXGW WenKai 子集，按 deck 的字符集现场生成，见 embed_text_font）。
+MATH_LOCAL = '"Latin Modern Math", "CMU Serif", "STIX Two Math", serif'
+TEXT_LOCAL = '"LXGW WenKai", "霞鹜文楷", "KaiTi", "STKaiti", serif'
 
 
-def hand_face() -> str:
-    css_file = ASSETS / "handfont.css"
+def math_face() -> str:
+    css_file = ASSETS / "mathfont.css"
     if css_file.is_file():
         return css_file.read_text(encoding="utf-8")
-    return f'@font-face {{ font-family: "DeckHand"; src: local("LXGW WenKai"); }}\n'
+    return f'@font-face {{ font-family: "DeckMath"; src: local("Latin Modern Math"); }}\n'
 
 
-HAND_STROKE = (
-    "data:image/svg+xml;utf8,"
-    "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='8' viewBox='0 0 600 8'"
-    " preserveAspectRatio='none'><path d='M3,5.2 C90,3.0 170,6.6 250,4.8 330,3.0 410,6.4 490,4.4"
-    " 545,3.1 578,5.4 597,4.6' fill='none' stroke='%232c7fb8' stroke-width='2.4'"
-    " stroke-linecap='round'/></svg>"
-)
+TEXT_FONT_CANDIDATES = [
+    os.environ.get("DECK_TEXT_FONT", ""),
+    str(Path.home() / ".local/share/fonts/LXGWWenKai-Regular.ttf"),
+    "/usr/share/fonts/truetype/lxgw-wenkai/LXGWWenKai-Regular.ttf",
+]
+
+
+def find_text_font() -> str | None:
+    for cand in TEXT_FONT_CANDIDATES:
+        if cand and Path(cand).is_file():
+            return cand
+    return None
+
+
+_TEXT_CACHE: dict[str, str] = {}
+
+
+def text_face(charset: str) -> str:
+    """把 deck 用到的字符子集化成 DeckText（woff2 + base64），返回 @font-face 规则。
+
+    每个 deck 的字符集不同，所以文本字体是「按 deck 现场生成」而不是仓库里的固定资产：
+    300 个汉字约 86KB woff2，固定全量 CJK 子集会撑爆 320KB。
+    源字体缺失时返回空串，check_deck 会报「缺 DeckText」。
+    """
+    key = str(abs(hash(charset)))
+    if key in _TEXT_CACHE:
+        return _TEXT_CACHE[key]
+    source = find_text_font()
+    if not source or not charset:
+        return ""
+    import base64
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        txt = Path(tmp) / "chars.txt"
+        out = Path(tmp) / "text.woff2"
+        txt.write_text(charset, encoding="utf-8")
+        subprocess.run(
+            [sys.executable, "-m", "fontTools.subset", source, f"--text-file={txt}",
+             "--flavor=woff2", f"--output-file={out}", "--layout-features=*", "--no-hinting"],
+            check=True, capture_output=True)
+        from fontTools.ttLib import TTFont
+
+        font = TTFont(out)
+        for name_id, value in ((1, "DeckText"), (3, "DeckText-Regular"), (4, "DeckText"),
+                               (6, "DeckText-Regular"), (16, "DeckText"), (17, "Regular")):
+            font["name"].setName(value, name_id, 3, 1, 0x409)
+            font["name"].setName(value, name_id, 1, 0, 0)
+        font.flavor = "woff2"
+        font.save(out)
+        b64 = base64.b64encode(out.read_bytes()).decode("ascii")
+    css = ('@font-face { font-family: "DeckText"; font-display: block; font-weight: 100 900;\n'
+           f'  src: url(data:font/woff2;base64,{b64}) format("woff2"); }}\n')
+    _TEXT_CACHE[key] = css
+    return css
+
+
+def visible_text(html: str) -> str:
+    """deck 里所有会被渲染的字符：正文文本 + CSS 伪元素 content 字符串。"""
+    body = re.sub(r"<style\b.*?</style>|<script\b.*?</script>", "", html, flags=re.S | re.I)
+    text = html_mod.unescape(re.sub(r"</?[A-Za-z][^>]*>", "", body))
+    css = "".join(re.findall(r"<style\b[^>]*>(.*?)</style>", html, re.S | re.I))
+    text += "".join(re.findall(r"content\s*:\s*\"([^\"]*)\"", css))
+    # 空格必须进子集：缺 U+0020 时渲染引擎会拿系统字体画空格（实测 Chrome PDF 里 737 个空格回退到 LXGW）
+    return "".join(sorted({" "} | {ch for ch in text if not ch.isspace()}))
+
+
+def embed_text_font(html: str) -> str:
+    """把按 deck 字符集生成的 DeckText 塞进 /*__TEXT_FACE__*/ 占位处。"""
+    return html.replace("/*__TEXT_FACE__*/", text_face(visible_text(html)))
+
 
 CSS = (
-    hand_face()
-    + ':root { --hand: "DeckHand", ' + HAND_LOCAL + '; }\n'
-    + """  html, body { margin: 0; height: 100%; overflow: hidden; background: #fbfaf8; color: #1b1b1b;
-    font-family: system-ui, -apple-system, "Noto Sans SC", sans-serif; font-size: 21px; }
+    math_face()
+    + ':root { --text: "DeckText", ' + TEXT_LOCAL + ';\n'
+    + '         --math: "DeckMath", ' + MATH_LOCAL + '; }\n'
+    + """  /*__TEXT_FACE__*/
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fbfaf8; color: #1b1b1b;
+    font-family: var(--text); font-size: 21px; }
   #deck { width: 1600px; height: 900px; transform: scale(var(--k, 1)); transform-origin: top left; }
   .slide { width: 1600px; height: 900px; box-sizing: border-box; padding: 34px 56px 26px;
     position: absolute; top: 0; left: 0; overflow: hidden; background: #fbfaf8; }
@@ -115,34 +188,25 @@ CSS = (
   .fig.compact svg text.ax { font-size: 30px; }
   .fig.compact svg g.dim text { font-size: 28px; }
   figcaption { font-size: 19px; color: #5d6470; margin-top: 2px; }
-  /* 公式一律手写体：手写体 + 变量斜体 + 整行 −0.3° + 手绘笔迹下划线。
-     倾斜只能挂在 .expr（行内）上：挂到 .formula 会把里面的推导表格一起转，
-     1428px 宽的表会被 tan(0.3°) 拉出 7.5px 高差（实测）。表格/单位行/正文必须水平。
-     手写体也只能挂在纯数学元素上：子集字体没有 CJK 字形，中文会回退到系统字体。 */
-  .formula { font-size: 27px; padding: 8px 16px 10px; background: #f3f7fb; margin: 10px 0 0;
-    position: relative; color: #17222e; line-height: 1.5; }
-  .formula .expr { position: relative; display: inline-block; padding-bottom: 3px;
-    transform: rotate(-0.3deg); font-family: var(--hand); }
-  .formula .expr::after { content: ""; position: absolute; left: -2px; right: -2px; bottom: -2px;
-    height: 7px; background-image: url("__STROKE__"); background-repeat: no-repeat;
-    background-position: left bottom; background-size: 100% 7px; }
-  .formula .eqno { font-size: 20px; color: #2c7fb8; font-weight: 650; margin-right: 10px;
-    font-family: system-ui, -apple-system, "Noto Sans SC", sans-serif; }
-  .formula .units { display: block; font-size: 19px; color: #4a5260; margin-top: 2px;
-    font-family: system-ui, -apple-system, "Noto Sans SC", sans-serif; }
-  /* 上下标：缩小并压掉行高，否则每加一个下标就把整行撑高几像素 */
-  sub, sup { font-size: 0.72em; line-height: 0; }
-  sub { vertical-align: -0.22em; }
-  sup { vertical-align: 0.42em; }
-  .formula var, ol.axioms var, details.deriv td:nth-child(2) var { font-style: italic; }
-  /* 推导表的「式子」列不许用手写体：单元格里夹着中文（「与 A5 的 y = kx + c 对照」「记 b ≡ k」），
-     子集字体没有 CJK 字形，会回退到本机系统字体 —— 同一份 deck 在两台机器上字形不一致。 */
-  details.deriv td:nth-child(2) { font-size: 20px; }
+  /* 公式：数学衬线排版（参考图口径）。无旋转、无下划线、无底色、无边框；
+     手写观感只留给正文文字（var(--text)），公式一律 var(--math)。 */
+  /* 参考图口径：白底、1px 深色方框内一行式子；无旋转、无下划线、无底色。
+     方框只框式子本身（.expr），单位行与推导表留在框外。 */
+  .formula { font-size: 30px; margin: 12px 0 0; color: #0f1115; line-height: 1.4; }
+  .formula .expr { display: inline-block; border: 1px solid #0f1115; background: #fff;
+    padding: 9px 10px; line-height: 1; font-family: var(--math); white-space: nowrap; }
+  .formula .eqno { font-size: 20px; color: #2c7fb8; font-weight: 650; margin-right: 12px;
+    font-family: var(--text); }
+  .formula .units { display: block; font-size: 19px; color: #4a5260; margin-top: 4px;
+    font-family: var(--text); }
+  .formula var, ol.axioms var { font-style: normal; }
+  /* 推导表的「式子」列是表格文字：跟正文一样用文字字体（含中文注释） */
+  details.deriv td:nth-child(2) { font-size: 19px; }
   .io { font-size: 20px; color: #4a5260; margin: 6px 0 2px; }
   ol.axioms { margin: 10px 0 0; padding-left: 30px; font-size: 22px; line-height: 1.7; }
   ol.axioms li { margin-bottom: 4px; }
   ol.axioms b { color: #2c7fb8; font-weight: 650; }
-  ol.axioms .eq { font-weight: 550; font-family: var(--hand); font-size: 24px; }
+  ol.axioms .eq { font-weight: 400; font-family: var(--math); font-size: 25px; }
   ol.axioms .note { margin-left: 12px; color: #5d6470; }
   ol.axioms .note::before { content: "—— "; }
   .lead { font-size: 21px; line-height: 1.45; margin: 10px 0 0; }
@@ -150,9 +214,16 @@ CSS = (
   ul.pit { margin: 10px 0 0; padding-left: 0; list-style: none; font-size: 20px; line-height: 1.45; }
   ul.pit li { margin: 0 0 10px; padding-left: 14px; border-left: 4px solid #7f8c8d; }
   ul.pit b { color: #c0392b; }
-  ul.items { margin: 10px 0 0; padding-left: 26px; font-size: 21px; line-height: 1.5; }
+  ul.items { margin: 10px 0 0; padding-left: 0; list-style: none; font-size: 21px; line-height: 1.5; }
+  /* 项目符号用 CSS 生成，字符会进子集；默认的 disc 是引擎自带字形，不在子集里会回退系统字体 */
+  ul.items li::before { content: "•"; color: #2c7fb8; margin-right: .5em; }
   details { border: 1px solid #dcd8d0; border-radius: 8px; background: #fff; padding: 5px 14px; margin-top: 8px; font-size: 19px; }
-  summary { font-size: 20px; font-weight: 550; cursor: pointer; }
+  summary { font-size: 20px; font-weight: 550; cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  /* 折叠三角用 border 画，不用字形：默认 marker 的 ▶ 不在子集里，会回退系统字体 */
+  summary::before { content: ""; display: inline-block; width: 0; height: 0;
+    border-left: 7px solid #666; border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+    margin-right: 8px; vertical-align: middle; }
   details table { border-collapse: collapse; width: 100%; margin-top: 6px; }
   details th, details td { border-bottom: 1px solid #e2ded6; padding: 3px 8px;
     text-align: left; line-height: 1.3; vertical-align: top; }
@@ -168,7 +239,7 @@ CSS = (
     .fig svg { width: 860px; height: 399px; }
     details th, details td { padding: 2px 6px; }
   }"""
-).replace("__STROKE__", HAND_STROKE)
+) + mathrender.MATH_CSS
 
 JS = """  const slides = [...document.querySelectorAll('.slide')];
   let current = 0;
@@ -227,9 +298,9 @@ def subs(fragment: str) -> str:
     return "".join(out)
 
 
-def expr_span(expr: str) -> str:
-    """把公式主体包成 .expr：手绘笔迹只压在式子上，不压到下面的推导块。"""
-    return f'<span class="expr">{expr}</span>'
+def expr_span(expr: str, syms: list[str] | None = None) -> str:
+    """把公式主体排成数学衬线（mathrender），再包成 .expr。"""
+    return f'<span class="expr">{mathrender.math(expr, syms)}</span>'
 
 
 def axis_label(spec: dict, axis: str) -> str:
@@ -256,10 +327,11 @@ def ticks(spec: dict, axis: str) -> str:
     return '<text data-axis="y" x="84" y="400">TODO 刻度</text>'
 
 
-def figure(spec: dict, caption: str, anim: str = "") -> str:
+def figure(spec: dict, caption: str, anim: str = "", compact: bool = False) -> str:
     sym_x, sym_y = spec.get("xsym", spec["x"]), spec.get("ysym", spec["y"])
     anim_attr = f' data-anim="{anim}"' if anim else ""
-    return f"""  <figure class="fig" data-x="{esc(spec['x'])}" data-y="{esc(spec['y'])}" data-xscale="{spec.get('xscale', 'linear')}" data-yscale="{spec.get('yscale', 'log')}"{anim_attr}>
+    cls = "fig compact" if compact else "fig"
+    return f"""  <figure class="{cls}" data-x="{esc(spec['x'])}" data-y="{esc(spec['y'])}" data-xscale="{spec.get('xscale', 'linear')}" data-yscale="{spec.get('yscale', 'log')}"{anim_attr}>
     <svg viewBox="0 0 1120 520">
       <!-- TODO 真图：曲线用「数据数组 + 渲染函数」生成，不要逐点写死坐标 -->
       <text class="ax" data-axis="x" data-sym="{esc(sym_x)}">{esc(axis_label(spec, 'x'))}</text>
@@ -272,20 +344,12 @@ def figure(spec: dict, caption: str, anim: str = "") -> str:
 
 
 def formula_block(spec: dict) -> str:
-    expr = esc(spec["expr"])
-    for sym in spec.get("syms", []):
-        expr = re.sub(
-            rf"(?<![\w₀₁]){re.escape(sym)}(?![\w₀₁])",
-            f'<var data-sym="{sym}">{sym}</var>',
-            expr,
-            count=1,
-        )
     rows = "".join(
         f"<tr><td>{esc(step)}</td><td>{subs(esc(body))}</td><td>{subs(esc(basis))}</td></tr>"
         for step, body, basis in spec.get("deriv", [])
     )
     return f"""  <div class="formula" data-eq="{spec['eq']}">
-    <span class="eqno">式 ({spec['eq']})</span>{expr_span(subs(expr))}
+    <span class="eqno">式 ({spec['eq']})</span>{expr_span(spec["expr"], spec.get("syms"))}
     <span class="units">{esc(spec.get('units', 'TODO 符号与单位'))}</span>
     <details class="deriv" data-eq="{spec['eq']}">
       <summary>推导：式 ({spec['eq']})</summary>
@@ -310,7 +374,7 @@ def deriv_part_block(spec: dict) -> str:
   </details>"""
 
 
-def recalc_block(rows: list[list[str]]) -> str:
+def recalc_block(rows: list[list[str]], open_block: bool = False) -> str:
     body = "".join(
         "<tr>" + "".join(f"<td>{esc(cell)}</td>" for cell in row) + "</tr>" for row in rows
     )
@@ -324,20 +388,12 @@ def recalc_block(rows: list[list[str]]) -> str:
 
 def p_formula_block(spec: dict) -> str:
     """预备段的一条 P 式：数据属性（used-in / stop / axiom）和正文式一样都挂在 .formula 上。"""
-    expr = esc(spec["expr"])
-    for sym in spec.get("syms", []):
-        expr = re.sub(
-            rf"(?<![\w₀₁]){re.escape(sym)}(?![\w₀₁])",
-            f'<var data-sym="{sym}">{sym}</var>',
-            expr,
-            count=1,
-        )
     rows = "".join(
         f"<tr><td>{esc(step)}</td><td>{subs(esc(body))}</td><td>{subs(esc(basis))}</td></tr>"
         for step, body, basis in spec.get("deriv", [])
     )
     return f"""  <div class="formula" data-eq="{spec['eq']}" data-used-in="{spec['used_in']}" data-axiom="{spec['axiom']}" data-stop="{esc(spec.get('stop', ''))}">
-    <span class="eqno">{spec['eq']}</span>{expr_span(subs(expr))}
+    <span class="eqno">{spec['eq']}</span>{expr_span(spec["expr"], spec.get("syms"))}
     <span class="units">{esc(spec.get('units', 'TODO 符号与单位'))}</span>
     <details class="deriv" data-eq="{spec['eq']}" open>
       <summary>推导：{spec['eq']}</summary>
@@ -358,7 +414,8 @@ def axiom_block(outline: dict) -> str:
         note = esc(item.get("note", ""))
         items += (
             f'<li data-axiom="{aid}" data-used-in="{used_in}"><b>[{tag}]</b> '
-            f'<span class="eq">{eq}</span><span class="note">{note}</span></li>'
+            f'<span class="eq">{mathrender.math(eq, [])}</span>'
+            f'<span class="note">{note}</span></li>'
         )
     return f'  <ol class="axioms">{items}</ol>'
 
@@ -410,7 +467,9 @@ def slide_html(slide: dict, page: int, total: int) -> str:
     if slide.get("recast"):
         parts.append(f'  <p class="recast">{esc(slide["recast"])}</p>')
     if slide.get("fig"):
-        parts.append(figure(slide["fig"], slide.get("caption", ""), slide.get("anim", "")))
+        # 同页还有公式/复算表时图必须让出高度，否则 details 一展开就超出 900px
+        compact = bool(slide.get("formula") or slide.get("recalc")) or slide.get("compact", False)
+        parts.append(figure(slide["fig"], slide.get("caption", ""), slide.get("anim", ""), compact))
     if slide.get("pformula"):
         parts.append(p_formula_block(slide["pformula"]))
     if slide.get("formula"):
@@ -429,7 +488,7 @@ def slide_html(slide: dict, page: int, total: int) -> str:
     if slide.get("lead"):
         parts.append(f'  <p class="lead">{esc(slide["lead"])}</p>')
     if slide.get("recalc"):
-        parts.append(recalc_block(slide["recalc"]))
+        parts.append(recalc_block(slide["recalc"], slide.get("open_recalc", False)))
     parts.append(f'  <span class="pg">{page} / {total}</span>')
     parts.append("</section>")
     return "\n".join(parts)
@@ -448,11 +507,12 @@ def build(outline: dict) -> str:
     body = "\n\n".join(slide_html(slide, index, total) for index, slide in enumerate(slides, start=1))
     recalc = outline.get("recalc")
     if recalc and not any(slide.get("recalc") for slide in slides):
-        body = body.replace(
-            f'  <span class="pg">{total} / {total}</span>',
-            recalc_block(recalc) + f'\n  <span class="pg">{total} / {total}</span>',
-        )
-    return f"""<!doctype html>
+        # 复算表单独成页：塞进末页会和图/推导抢 900px，展开即溢出（实测）
+        slides.append({"kind": "calc", "h1": "数值复算：每个带单位的数都能在这里查到出处",
+                       "recalc": recalc, "open_recalc": True})
+        total = len(slides)
+        body = "\n\n".join(slide_html(slide, i, total) for i, slide in enumerate(slides, start=1))
+    return embed_text_font(f"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -472,7 +532,7 @@ def build(outline: dict) -> str:
 </script>
 </body>
 </html>
-"""
+""")
 
 
 def main() -> int:
