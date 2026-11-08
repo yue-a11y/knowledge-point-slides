@@ -1,4 +1,4 @@
-# 反例库：实测踩到的 26 种翻车形态（含公式预备段 7 条、公式排版 2 条）
+# 反例库：实测踩到的 27 种翻车形态（含公式预备段 7 条、公式排版 3 条）
 
 每条格式：**错的样子 → 为什么错 → skill 里哪条规则会拦 → 正确写法**。
 开工前读一遍，交付前对着扫一遍。示例取自「LSV → Tafel 斜率」那次交付，规则本身与学科无关。
@@ -10,9 +10,9 @@
 - **错**：`<div class="formula">η = E − E_eq</div>`，字体跟正文同一个 `system-ui`，下划线原样留在页面上。
 - **为什么错**：观众一眼就知道那是代码写法的复制品，不是「一行式子」。手写数学里变量斜体、下标下沉，
   而系统字体的 `_` 是打在基线上的等宽符号，读起来像变量名 `E_eq`。
-- **拦它的规则**：C9（缺 `@font-face DeckHand` / 没内嵌 base64 / `.formula` 没用 `var(--hand)` = error；
+- **拦它的规则**：C9（缺 `@font-face DeckMath` / 没内嵌 base64 / `.formula .expr` 没用 `var(--math)` = error；
   公式区出现 `X_y` = warn）。
-- **改**：`scripts/make_handfont.py` 生成子集并内嵌；`scaffold.subs()` 把 `E_eq` 换成 `E<sub>eq</sub>`；
+- **改**：`scripts/make_mathfont.py` 生成数学子集并内嵌（正文手写体由 `embed_text_font` 按 deck 字符集生成）；`mathrender` 把 `j_0` 排成真下标；
   `sub, sup { font-size: .72em; line-height: 0 }` 防止把行高撑大。
 
 ## 0-B. 复算表一展开，下半截不见了
@@ -258,9 +258,20 @@
 - **为什么错**：单文件的承诺是「公式字形自带」；回退到系统字体后，同一份 deck 在没装该字体的机器上
   会换字、甚至掉字。名字不改则连「有没有回退」都无法判定。
 - **拦它的规则**：C10（`var(--hand)` 只许 `.formula .expr` / `ol.axioms .eq`）+ 字形覆盖检查
-  （解 base64 读 cmap，公式元素里每个字符都要在子集里）+ `make_handfont.py` 把 name 改成 DeckHand。
-- **改**：手写体只挂纯数学元素；推导表用正文体；`make_handfont.py` 改名后重新生成；
-  验收用 `tools/measure_deck.py --fonts`（公式元素只报 DeckHand）与「屏蔽系统 LXGW 后逐像素比对」。
+  （解 base64 读 cmap，公式元素里每个字符都要在子集里）+ `make_mathfont.py` 把 name 改成 DeckMath。
+- **改**：公式挂 `DeckMath`、正文挂 `DeckText`，两套子集都内嵌；子集 name 分别改成 DeckMath / DeckText；
+  验收用 `tools/measure_deck.py --fonts`（公式只报 DeckMath、正文只报 DeckText）与「屏蔽系统字体后逐像素比对」。
+
+## 26. 公式退回 `<sub>/<sup>` 平铺文本（没有真上下标排版）
+
+- **错**：`η = b·log<sub>10</sub>(j/j<sub>0</sub>)`，指数里再放 `η/b<sub>a</sub>` 就只能靠 `<sup>` 套 `<sub>`，
+  嵌套后字号/基线全乱；再想排 `e^{η/b_a}` 这种指数内斜杠分式就排不出来。
+- **为什么错**：参考图的观感来自「数学排版」：斜体变量、正体 e、指数整体抬到 x-height 之上、
+  嵌套下标逐级缩到 0.5 倍。`<sub>/<sup>` 是行内文本的上下标，不是数学排版，嵌套时没有基线规则。
+- **拦它的规则**：C10（`.expr` / `.eq` 里出现 `<sub>`/`<sup>` → error）+ mathrender 的 DSL
+  （`_` / `^` 接 `{}` 组，可嵌套）。
+- **改**：公式写成 DSL（`j = j_0 e^{η/b_a}`），由 `scripts/mathrender.py` 排；
+  上下标 0.7em、嵌套 ×0.72、上标 `-.42em`、下标 `+.2em`，全部 `line-height: 0`。
 
 ---
 
@@ -292,7 +303,9 @@
 □ 每条 P 删掉后听众会失去一个可算的中间量吗？不会 → 降成 A 条目
 □ A 节里有没有终点量？有没有 A 之间互推？[约定] 与 [经验事实] 分对了吗？
 □ 表格是不是水平的？（`tools/measure_deck.py --tilt`，|Δy| ≤ 1px）
-□ 公式元素是不是只用 DeckHand？（`--fonts`；公式里有没有中文）
+□ 公式元素是不是只用 DeckMath、正文只用 DeckText？（`--fonts`）
+□ 公式里有没有 `<sub>/<sup>`？指数/嵌套下标排得出来吗？
+□ `pdffonts shots/deck-print.pdf` 里只有 DeckText / DeckMath 吗？
 □ 第 1 页是公理清单？每条 A 带 [定义]/[定律]/[经验事实]？A 节里没有近似？
 □ 每条 P 的首步依据是 A 编号或「定义」？全文没有「由式/显然/易得/由上可知」？
 □ 每条 P 有 data-used-in / data-stop / data-axiom 与 .io 行？被用到的那页真的引用了它？
@@ -302,5 +315,7 @@
 □ 每条 P 删掉后听众会失去一个可算的中间量吗？不会 → 降成 A 条目
 □ A 节里有没有终点量？有没有 A 之间互推？[约定] 与 [经验事实] 分对了吗？
 □ 表格是不是水平的？（`tools/measure_deck.py --tilt`，|Δy| ≤ 1px）
-□ 公式元素是不是只用 DeckHand？（`--fonts`；公式里有没有中文）
+□ 公式元素是不是只用 DeckMath、正文只用 DeckText？（`--fonts`）
+□ 公式里有没有 `<sub>/<sup>`？指数/嵌套下标排得出来吗？
+□ `pdffonts shots/deck-print.pdf` 里只有 DeckText / DeckMath 吗？
 ```

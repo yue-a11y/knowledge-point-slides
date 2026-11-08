@@ -355,33 +355,46 @@ Ctrl+P 打印时必须不展开）。不许留在标题或 lead。
 - 阶梯必须完整：每步写清「输入 → 操作 → 输出 → 判据」，不跳中间步骤。
 - ≥3 条具名易错点，每条三段式：**错误做法 / 现象 / 正确做法**。写成「注意 XX」的视为没写；全部集中在 1 页（`data-kind="pitfall"`）。
 
-## 公式怎么排（手写体 + 真下标 + 展开态）
+## 公式怎么排（数学衬线 + 文字手写 + 展开态）
 
-公式不是正文的一部分，它要看起来像**写在纸上的一行式子**。
+公式不是正文的一部分：**公式按参考图排成数学衬线（Computer Modern 一族），正文文字用手写体**。
+两条线各用一套内嵌字体，互不继承。
 
-- **手写体必须内嵌**。`scaffold.CSS` 自带 `@font-face` 与 `var(--hand)`，字形来自
-  `scripts/make_handfont.py` 生成的 `scripts/assets/handfont.css`（LXGW WenKai 子集，
-  woff2 约 29KB，base64 后 38KB）。换机器、断网都不掉档。
-  子集丢了先跑一次 `python3 scripts/make_handfont.py`；没装源字体时它会 warn，
-  此时 `@font-face` 退化成 `local()`，`check_deck.py` 直接 error。
-- **只有式子加手绘笔迹**：`<span class="expr">` 下方那条微弯的线，不许把推导块和单位行也圈进去。
-- **手写体只挂纯数学元素**：`.formula .expr` 与 `ol.axioms .eq`。子集字体只有 221 个字形
-  （ASCII + 希腊字母 + 数学符号 + 上下标），**没有 CJK**；挂到会含中文的元素（`.formula`、推导表的
-  式子/依据列、正文）上，中文就会回退到本机系统字体——同一份 deck 在两台机器上字形不一致。
-  推导表的式子列因此用正文字体。
-- **子集字体的内部名必须是 `DeckHand`**。`make_handfont.py` 会把 name 表改成 DeckHand；
-  不改的话 Chromium 的 `CSS.getPlatformFontsForNode` 与 `pdffonts` 会把内嵌子集和系统 LXGW WenKai
-  混成同一个名字，「到底回退没有」无法判定（实测踩过）。
-- **字形覆盖要查 cmap**：公式元素里的每个字符都必须在内嵌子集里，缺一个就是换机器掉字。
-  `check_deck.py` 会解 base64 读 cmap 逐个字符核对。
-- **下标用 `<sub>`，不许写 `E_eq`**。`scaffold.subs()` 会把 `X_y` 换成 `X<sub>y</sub>`，
-  `sub/sup` 已压掉行高（`line-height: 0`），不会把 48px 的行撑成 60px。
-  `data-sym` 属性保持 `E_eq` 原样——绑定检查靠它，符号归一由 `sym_key()` 处理。
-- 变量斜体、单位正体。**倾斜只给式子本身**（`.formula .expr`，−0.3°）；`.formula` 块、单位行、
-  推导表、图注、正文一律水平。把 rotate 挂在块级元素上，里面的表格会跟着转：
-  1428px 宽的表在 0.3° 下两端高差 7.5px，肉眼可辨，导出的 PDF 同样斜。
-- 量倾斜与字形来源：`python3 tools/measure_deck.py <html> --tilt` / `--fonts`
-  （验收线：表格 |Δy| ≤ 1px、公式元素只用 DeckHand）。
+### 公式：Latin Modern Math + `mathrender`
+
+- 式子写成一行 **DSL**（`j = j_0 e^{η/b_a}`），由 `scripts/mathrender.py` 排成 HTML：
+  `_` / `^` 接单字符或 `{…}` 组，可嵌套（`b_a` 在指数里也能再带下标）；`\text{…}` 走正体文字。
+- **变量斜体、数字/运算符/函数名正体**：拉丁与希腊小写单字母映射到数学斜体码位（𝑈+1D434…），
+  `e`、`exp`、`ln`、`log`、`Δ`、数字、括号一律正体。上下标 0.7em，嵌套再乘 0.72。
+- **指数抬到 x-height 之上**（`-.42em`），下标压到基线下（`+.2em`）；全部 `line-height: 0`，
+  不改变整行基线节奏，一行式子永远是一行。
+- **不许退回 `<sub>/<sup>` 平铺文本**：公式必须由 mathrender 排；`check_deck.py` 在
+  `.expr` / `.eq` 里发现 `<sub>`/`<sup>` 直接 error。
+- **白底、1px 深色方框**（`#0f1115`，内边距 9–10px），无旋转、无下划线、无底色——参考图口径。
+  方框只框式子本身（`.expr`），单位行与推导表留在框外。
+- 字体：`scripts/make_mathfont.py` 生成 `scripts/assets/mathfont.css`（Latin Modern Math 子集，
+  woff2 约 75KB），子集内部 name 改成 `DeckMath`。换机器、断网都不掉档。
+- 字形覆盖：`.expr` / `.eq` 里每个字符都必须在内嵌 cmap 里（`check_deck.py` 解 base64 逐字核对）。
+
+### 文字：LXGW WenKai 子集（按 deck 现场生成）
+
+- 正文、标题、图注、表格文字统一 `var(--text)` = `DeckText`（LXGW WenKai 子集，手写体）。
+  **不许退回无衬线**：`check_deck.py` 要求 `body { font-family: var(--text) }` 且 DeckText 内嵌。
+- 文本字体按 **deck 的字符集**现场子集化（`scaffold.embed_text_font`）：300 个汉字约 86KB woff2，
+  全量 CJK 会撑爆 320KB。字符集要含 **空格 U+0020**（缺了空格会回退系统字体，Chrome PDF 实测）
+  与 CSS 伪元素的 `content` 字符串（`•`、`——`）。
+- 字形覆盖：每一页的可见文字都必须落在 DeckText 的 cmap 里，否则 error。
+
+### 字形来源怎么量
+
+`python3 tools/measure_deck.py <html> --fonts`（CDP `CSS.getPlatformFontsForNode`）：
+公式元素只许 `DeckMath`，正文只许 `DeckText`；`--tilt` 量表格与公式的水平度（|Δy| ≤ 1px）。
+
+### 打印
+
+`tools/shoot_deck.py` 用浏览器打印生成 `deck-print.pdf`（= Ctrl+P 同一条路径），PDF 里只有
+DeckText / DeckMath。**不要用 weasyprint 当打印源**：它的 SVG `<text>` 不走 `@font-face`，
+会把系统字体（DejaVu / WenQuanYi）带进 PDF（实测）。weasyprint 只用于页数交叉验证。
 
 **折叠块必须「展开后仍在一页内」。** 屏幕态是折叠的，一展开就顶出 900px，
 `overflow: hidden` 会把下半截直接裁掉——观众看到的是半张表。规则：

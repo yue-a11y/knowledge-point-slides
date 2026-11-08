@@ -174,6 +174,31 @@ A–S 里凡是标「脚本」的，`check_deck.py` 会自己拦；标「人」�
 - 首页标题只陈述「这页有什么」（例：「三条定义、一条约定、一条定律」），不解释为什么只列这些
 - 要留给讲者的话，只能进交付说明或默认折叠的 `<div class="notes">`（打印不展开）
 
+## N 公式排版、字形覆盖与倾斜
+
+- [ ] 公式是一行 DSL 排出来的（`mathrender`）：变量斜体、数字/函数名正体、真上下标；没有 `<sub>/<sup>`
+- [ ] 公式是白底 1px 方框、无旋转/下划线/底色；单位行与推导表在框外
+- [ ] 正文/标题/图注/表格文字用 `var(--text)` 手写体，没退回无衬线
+- [ ] `DeckMath` 与 `DeckText` 都内嵌（`data:font/woff2`）；子集 name 分别是 DeckMath / DeckText
+- [ ] 字符集含空格与伪元素字符；公式字符 ⊆ DeckMath、可见文字 ⊆ DeckText
+- [ ] `tools/measure_deck.py --fonts` 公式只报 DeckMath、正文只报 DeckText
+- [ ] `pdffonts shots/deck-print.pdf` 只有 DeckText / DeckMath（无 LXGW / DejaVu / WenQuanYi）
+- [ ] `tools/measure_deck.py --tilt` 表格 |Δy| ≤ 1px
+- [ ] 整份 HTML ≤320KB（数学子集 ~100KB base64 + 文本子集按字符数）
+
+## O. 孤儿符号为 0（脚本 + 人）
+
+- `calc` 页每个 `<var data-sym="X">` 都能追到某条 P 式的 LHS/RHS，或起点图上的读数（`origin_reads`）
+- 每条 P 的 `data-used-in="N"` 指向的 `calc` 页**真的引用**这条式（`data-uses="P3"` 或正文写「P3」）
+- 正文引用预备式只写「P2」，不写「式 (P2)」
+
+## P. 页面无元话语（脚本 + 人）
+
+- 标题、lead、正文、列表里没有「开讲前 / 本文档 / 不再假设 / 为了讲清楚 / 本节只 / 后面会 /
+  接下来我们 / 不在这几条里 / 先钉死 / 请记住 / 需要说明的是」
+- 首页标题只陈述「这页有什么」（例：「三条定义、一条约定、一条定律」），不解释为什么只列这些
+- 要留给讲者的话，只能进交付说明或默认折叠的 `<div class="notes">`（打印不展开）
+
 ## N 公式手写体、字形覆盖与倾斜
 
 - [ ] 页面里有 `@font-face` 且 `src: url(data:font/woff2;base64,…)`（不是 `local()`、不是外链）
@@ -184,7 +209,7 @@ A–S 里凡是标「脚本」的，`check_deck.py` 会自己拦；标「人」�
 - [ ] `var(--hand)` 只出现在 `.formula .expr` / `ol.axioms .eq`；公式里没有中文（子集无 CJK）
 - [ ] 公式元素每个字符都在子集 cmap 里（`check_deck.py` 的「手写体」检查）
 - [ ] 块级元素不带 rotate/skew；`tools/measure_deck.py --tilt` 表格 |Δy| ≤ 1px
-- [ ] `tools/measure_deck.py --fonts` 公式元素只报 DeckHand
+- [ ] `tools/measure_deck.py --fonts` 公式元素只报 DeckMath
 
 ## O 展开态（折叠块的空间预算）
 

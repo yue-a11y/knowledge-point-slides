@@ -312,8 +312,8 @@ addEventListener('wheel', e => go(e.deltaY > 0 ? +1 : -1), { passive: true });
 | C6 标题 / lead / 正文出现元话语（开讲前、本文档、为了讲清楚、本节只、后面会…） | error |
 | C7 P 是 A 的重述 / 推导照抄公理 ≥2 行 / 步数 <3 / 真实变换 <2 | error |
 | C8 A 的 LHS 是终点量 / A 的 RHS 以另一条 A 的 LHS 开头 / [约定] 里写「实测」 | error / warn |
-| C9 缺 `@font-face DeckHand` / 没内嵌 `url(data:font/woff2;base64,…)` / `.formula .expr` 没用 `var(--hand)` | error |
-| C10 `var(--hand)` 出现在纯数学选择器之外；公式元素里有字符不在子集 cmap；块级元素带 rotate/skew | error |
+| C9 缺 `DeckMath` / `DeckText` 的 `@font-face`、没内嵌 `url(data:font/woff2;base64,…)`、`.formula .expr` 没用 `var(--math)`、`body` 没用 `var(--text)` | error |
+| C10 `var(--math)` 出现在纯数学选择器之外；公式/正文字符不在子集 cmap；块级元素带 rotate/skew；公式里用 `<sub>/<sup>` | error |
 | C9 公式区里出现 `E_eq` 这类下划线写法（没排成 `<sub>`） | warn |
 | C10 复算表与图同页且行数 > 8（展开必溢出）/ 无图页 > 14 行 | error / warn |
 | `shots/` 缺 `deck-print.pdf` 或抽查截图 <3 张 | warn |
@@ -334,30 +334,32 @@ addEventListener('wheel', e => go(e.deltaY > 0 ? +1 : -1), { passive: true });
 - 复算表和图挤一页 → 屏幕上点开「数值复算」，下半截被 `overflow:hidden` 裁掉（C10 +
   `shoot_deck.py` 展开态测量）
 
-## 公式渲染契约（手写体）
+## 公式渲染契约（数学衬线 + 文字手写）
 
 ```css
-@font-face { font-family: "DeckHand"; src: url(data:font/woff2;base64,…) format("woff2"); }
-:root { --hand: "DeckHand", "LXGW WenKai", "KaiTi", cursive; }
-.formula { /* 块级：不设 transform、不设手写体 */ }
-.formula .expr { position: relative; display: inline-block;
-                 font-family: var(--hand); transform: rotate(-0.3deg); }
-.formula .expr::after { /* 手绘笔迹，只压式子，不压推导块 */ }
-sub, sup { font-size: 0.72em; line-height: 0; }  /* 不许把行高撑大 */
+@font-face { font-family: "DeckMath"; src: url(data:font/woff2;base64,…) format("woff2"); }
+@font-face { font-family: "DeckText"; src: url(data:font/woff2;base64,…) format("woff2"); }
+:root { --math: "DeckMath", "Latin Modern Math", serif; --text: "DeckText", "LXGW WenKai", serif; }
+body { font-family: var(--text); }                    /* 正文：手写体 */
+.formula .expr { border: 1px solid #0f1115; padding: 9px 10px;
+                 font-family: var(--math); white-space: nowrap; }   /* 公式：数学衬线 + 1px 方框 */
+.mth .scr.sub { font-size: .7em; top: .2em; line-height: 0; }        /* 真下标 */
+.mth .scr.sup { font-size: .7em; top: -.42em; line-height: 0; }      /* 真上标 */
 ```
 
-- 字形来自 `scripts/make_handfont.py` → `scripts/assets/handfont.css`（LXGW WenKai 子集，
-  ASCII + 希腊字母 + 数学符号 + 上下标，共 221 字形；子集内部名字被改写成 `DeckHand`，
-  否则平台字体 API 与 `pdffonts` 会把它和系统 LXGW 混成同一个名字）。
-  缺源字体时脚本 warn、`@font-face` 退化成 `local()`，C9 直接 error——离线单文件不许依赖本机字体。
-- **`var(--hand)` 只许出现在 `.formula .expr` 与 `ol.axioms .eq`**：子集没有 CJK，挂到会含中文的
-  元素上就回退系统字体。推导表的式子列用正文体。
-- **倾斜只许出现在 `.formula .expr`**：块级元素（`.formula`/`details`/`table`/`figure`/`p`/`h1`）
-  带 rotate/skew 会把表格一起转斜（1428px 宽、0.3° → 7.5px 高差）。
-- 验收：`python3 tools/measure_deck.py <html> --tilt --fonts`（表格 |Δy| ≤ 1px；公式元素只用 DeckHand）。
-- 下标统一由 `scaffold.subs()` 从 `X_y` 生成 `<sub>`；`data-sym` 属性保持 `_` 原形。
-- 打印与屏幕一致：手绘笔迹是 `background-image: url("data:image/svg+xml,…")`，
-  weasyprint 与 chromium 都会画出来，不依赖 `filter`（weasyprint 不支持 CSS filter）。
+- **公式**：一行 DSL → `scripts/mathrender.py` → HTML；变量斜体（数学斜体码位）、数字/运算符/函数名正体，
+  上下标 0.7em、嵌套 ×0.72，指数抬到 x-height 之上。**不许用 `<sub>/<sup>` 平铺文本**（脚本 error）。
+- **方框**：白底、1px `#0f1115`、内边距 9–10px、无旋转、无下划线、无底色（参考图口径）。
+- **文字**：`body` 必须 `var(--text)`（手写体），标题/正文/图注/表格文字全部继承，不许退回无衬线。
+- **两套字体都必须内嵌**：`DeckMath`（`scripts/assets/mathfont.css`，Latin Modern Math 子集）
+  与 `DeckText`（按 deck 字符集现场子集化，`scaffold.embed_text_font`）。
+  子集内部 name 分别是 `DeckMath` / `DeckText`，否则 `pdffonts` 与平台字体 API 分不清内嵌与回退。
+- **字符集必须含空格 U+0020** 与 CSS 伪元素 `content` 里的字符（`•`、`——`）：缺了会回退系统字体。
+- **字形覆盖**：公式字符 ⊆ DeckMath 的 cmap；每页可见文字 ⊆ DeckText 的 cmap（脚本逐字核对）。
+- **打印**：`tools/shoot_deck.py` 用浏览器打印生成 `deck-print.pdf`；weasyprint 的 SVG text 不走
+  `@font-face`，只用于页数交叉验证，不作为打印源。
+- 验收：`python3 tools/measure_deck.py <html> --fonts`（公式只报 DeckMath、正文只报 DeckText）、
+  `pdffonts shots/deck-print.pdf`（只有 DeckText / DeckMath）。
 
 ## 展开态契约（折叠块的空间预算）
 

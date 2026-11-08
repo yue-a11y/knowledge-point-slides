@@ -41,7 +41,8 @@ python3 scripts/scaffold.py work/<slug>/outline.json work/<slug>/<slug>.html
 # ② 填完内容后自检：形式层 + 语义层 + 公式预备段 C1–C5 + 推导/复算/页码可见性
 python3 scripts/check_deck.py work/<slug>/<slug>.html
 # 公式手写体子集（只需跑一次；换字体或缺字形时重跑）
-python3 scripts/make_handfont.py
+python3 scripts/make_mathfont.py   # 公式数学子集（Latin Modern Math）
+# 正文手写体按 deck 字符集现场生成，不需要预生成资产
 # 展开态 + 打印页数（屏幕折叠看不出溢出的那块，只能真浏览器量）
 python3 tools/shoot_deck.py work/<slug>/<slug>.html
 

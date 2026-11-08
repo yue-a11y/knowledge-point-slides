@@ -114,7 +114,7 @@ SLIDE_RE = re.compile(
 PAGE_ATTR_RE = re.compile(r"data-page\s*=\s*\"(\d+)\"")
 EQ_ATTR_RE = re.compile(r"data-eq\s*=\s*\"(\d+)\"")
 H1_RE = re.compile(r"<h1\b[^>]*>(.*?)</h1>", re.S)
-TAG_RE = re.compile(r"<[^>]+>")
+TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")  # 标签必须以字母开头：正文里的「差 < 1%」不是标签
 ATTR_RE = re.compile(r"([\w:.-]+)\s*=\s*\"([^\"]*)\"")
 VAR_SYM_RE = re.compile(r"<var\b[^>]*data-sym\s*=\s*\"([^\"]*)\"", re.I)
 ANY_SYM_RE = re.compile(r"data-sym\s*=\s*\"([^\"]*)\"", re.I)
@@ -1280,9 +1280,28 @@ class Axiom:
         return "=".join(parts[1:]) if len(parts) > 1 else ""
 
 
+GREEK_ITALIC_SRC = "αβγδεζηθικλμνξοπρστυφχψω"
+
+
+def demath(text: str) -> str:
+    """把数学斜体码位（𝑗 / 𝜂 / 𝐸）还原成 ASCII / 希腊字母，供规则比较。"""
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if 0x1D434 <= code <= 0x1D44D:
+            out.append(chr(ord("A") + code - 0x1D434))
+        elif 0x1D44E <= code <= 0x1D467:
+            out.append(chr(ord("a") + code - 0x1D44E))
+        elif 0x1D6FC <= code <= 0x1D71B:
+            out.append(GREEK_ITALIC_SRC[code - 0x1D6FC])
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def normalize_expr(value: str) -> str:
-    """归一化式子：去标签/单位/括号注记/空白，≡ 当 =。"""
-    text = text_of(value)
+    """归一化式子：去标签/单位/括号注记/空白，≡ 当 =，数学斜体还原成字母。"""
+    text = demath(text_of(value))
     text = re.sub(r"[（(][^）)]*[）)]", "", text)
     text = re.sub(r"\[[^\]]*\]", "", text)
     text = text.replace("≡", "=").replace("＝", "=")
@@ -1296,10 +1315,10 @@ def parse_axioms(page_body: str) -> dict[str, Axiom]:
         attrs = attrs_of(raw_attrs)
         text = text_of(inner)
         tag = next((item for item in AXIOM_TAGS if f"[{item}]" in text), "")
-        eq_match = AXIOM_EQ_RE.search(inner)
-        if eq_match:
+        eq_inner = find_span(inner, "eq")
+        if eq_inner is not None:
             # 下标写法 E<sub>eq</sub> 去标签后必须连成 Eeq，不能变成 "E eq" 两个 token
-            eq = TAG_RE.sub("", eq_match.group(1)).strip()
+            eq = TAG_RE.sub("", eq_inner).strip()
         elif "</b>" in inner:
             eq = text_of(inner.split("</b>", 1)[-1])
         else:
@@ -1844,10 +1863,13 @@ def check_formula_section(
 
     # ---- C1 孤儿符号闭包 ----
     defined: set[str] = set()
+    # 预备段页里渲染出的 <var data-sym> 就是「已定义符号」；A 节的式子已经排成数学字形，
+    # 不能再从 axiom.eq 的文本里切 token（那是 𝜂/𝐸 这类数学斜体码位，和 data-sym 对不上）。
+    for slide in slides:
+        if slide.kind in {"axioms", "formula"}:
+            defined |= {sym_key(v) for v in VAR_SYM_RE.findall(slide.body) if v.strip()}
     for formula in prep:
         defined |= {sym_key(sym) for sym in formula.syms}
-    for axiom in axioms.values():
-        defined |= {sym_key(tok) for tok in SYM_TOKEN_RE.findall(axiom.eq)}
     origin_reads: set[str] = set()
     outline = html_path.parent / "outline.json"
     if outline.is_file():
@@ -2000,15 +2022,14 @@ def check_shots(html_path: Path, pages: list[int], report: Report) -> None:
         report.warn("截图", f"抽查截图不足 3 张（现有 {len(images)} 张）")
 
 
-# ---- 公式渲染：手写体 + 下标 + 展开态 ------------------------------------
+# ---- 公式渲染：数学衬线 + 文字手写 + 展开态 ------------------------------
 
 
-HAND_HINT = "公式必须用内嵌手写体（scaffold.CSS 的 --hand）；公式里不许用下划线当下标"
+FONT_HINT = ("公式用内嵌数学衬线（--math / DeckMath，参考图口径）；正文用内嵌手写体（--text / DeckText）；"
+             "公式里不许退回 <sub>/<sup> 平铺文本")
 
-# var(--hand) 允许出现的选择器（纯数学，不含中文）
-HAND_SELECTORS = {".formula .expr", "ol.axioms .eq"}
-# 允许倾斜的选择器（行内公式；块级倾斜会把表格/图注一起转）
-TILT_ALLOWED = {".formula .expr"}
+# var(--math) 只许出现在纯数学元素上
+MATH_SELECTORS = {".formula .expr", "ol.axioms .eq", ".mth"}
 
 
 def css_rules(html: str) -> list[tuple[str, str]]:
@@ -2024,9 +2045,13 @@ def css_rules(html: str) -> list[tuple[str, str]]:
     return rules
 
 
-def hand_cmap(html: str):
-    """从 HTML 内嵌的 woff2 里读出 cmap；读不到返回 None。"""
-    m = re.search(r"url\(data:font/woff2;base64,([A-Za-z0-9+/=]+)\)", html)
+def font_cmap(html: str, family: str):
+    """读出某个 @font-face 内嵌 woff2 的 cmap；读不到返回 None。"""
+    m = re.search(
+        rf"@font-face\s*\{{[^}}]*font-family\s*:\s*[\"']?{re.escape(family)}[\"']?[^}}]*"
+        rf"url\(data:font/woff2;base64,([A-Za-z0-9+/=]+)\)",
+        html, re.S | re.I,
+    )
     if not m:
         return None
     try:
@@ -2044,105 +2069,167 @@ def hand_cmap(html: str):
         return None
 
 
-def hand_fragments(body: str) -> list[tuple[str, str]]:
-    """取出会被手写体渲染的片段：.formula .expr 与 ol.axioms .eq。"""
+def find_span(html: str, cls: str) -> str | None:
+    """取出第一个 class 含 cls 的 <span> 的内层 HTML（按嵌套配平，不能用来回正则）。"""
+    m = re.search(rf'<span\b[^>]*class="[^"]*\b{re.escape(cls)}\b[^"]*"[^>]*>', html)
+    if not m:
+        return None
+    depth, j = 1, m.end()
+    while j < len(html) and depth:
+        nxt_open = html.find("<span", j)
+        nxt_close = html.find("</span>", j)
+        if nxt_close == -1:
+            return html[m.end():]
+        if nxt_open != -1 and nxt_open < nxt_close:
+            depth += 1
+            j = nxt_open + 5
+        else:
+            depth -= 1
+            j = nxt_close + 7
+    return html[m.end():j - 7]
+
+
+def strip_math_spans(body: str) -> str:
+    """去掉 <span class="expr|eq">…</span>（含嵌套 span），剩下的才是「正文文字」。"""
+    out, i = [], 0
+    pattern = re.compile(r'<span class="(expr|eq)">')
+    while True:
+        m = pattern.search(body, i)
+        if not m:
+            out.append(body[i:])
+            break
+        out.append(body[i:m.start()])
+        depth, j = 1, m.end()
+        while j < len(body) and depth:
+            nxt_open = body.find("<span", j)
+            nxt_close = body.find("</span>", j)
+            if nxt_close == -1:
+                j = len(body)
+                break
+            if nxt_open != -1 and nxt_open < nxt_close:
+                depth += 1
+                j = nxt_open + 5
+            else:
+                depth -= 1
+                j = nxt_close + 7
+        i = j
+    return "".join(out)
+
+
+def math_fragments(body: str) -> list[tuple[str, str]]:
+    """取出会被数学字体渲染的片段：.formula .expr 与 ol.axioms .eq。"""
     out: list[tuple[str, str]] = []
-    for m in re.finditer(r'<span class="expr">(.*?)</span>', body, re.S):
-        out.append((".formula .expr", m.group(1)))
-    for m in re.finditer(r'<span class="eq">(.*?)</span>', body, re.S):
-        out.append(("ol.axioms .eq", m.group(1)))
+    for cls, label in (("expr", ".formula .expr"), ("eq", "ol.axioms .eq")):
+        pos = 0
+        while True:
+            m = re.search(rf'<span\b[^>]*class="[^"]*\b{cls}\b[^"]*"[^>]*>', body[pos:])
+            if not m:
+                break
+            frag = find_span(body[pos + m.start():], cls)
+            if frag is None:
+                break
+            out.append((label, frag))
+            pos += m.start() + 1
     return out
 
 
 def check_handwriting(html: str, slides: list[SlideInfo], report: Report) -> None:
-    """R：公式渲染成手写体；下标用 <sub>；折叠块展开后仍在一页内。
-
-    三条都来自真实翻车：公式排在系统字体里像代码、E_eq 这种编程写法留在页面上、
-    复算表一展开下半截就被 overflow:hidden 裁掉。
-    """
+    """R：公式排成数学衬线、正文用手写体、字形全部内嵌；折叠块展开后仍在一页内。"""
     problems = 0
 
-    # 1) 手写体必须内嵌（离线单文件），且只挂在纯数学元素上
-    face = re.search(r"@font-face\s*\{[^}]*font-family\s*:\s*([\"']?)DeckHand", html, re.I)
-    if not face:
-        report.error(
-            "手写体",
-            "@font-face 里没有 DeckHand：公式必须用手写体（scripts/make_handfont.py 生成内嵌子集）",
-        )
+    # 1) 两套字体都必须内嵌（离线单文件、换机器一致）
+    for family, label in (("DeckMath", "公式数学字体"), ("DeckText", "正文手写体")):
+        if not re.search(rf"@font-face\s*\{{[^}}]*font-family\s*:\s*[\"']?{family}", html, re.I):
+            report.error(
+                "字体",
+                f"@font-face 里没有 {family}（{label}）：{FONT_HINT}",
+            )
+            problems += 1
+        elif not re.search(
+            rf"@font-face\s*\{{[^}}]*font-family\s*:\s*[\"']?{family}[^}}]*url\(data:font/woff2;base64,",
+            html, re.S | re.I,
+        ):
+            report.error(
+                "字体",
+                f"{family} 没用 data:font/woff2 内嵌：换台机器字体就掉档，离线单文件要求自带字形",
+            )
+            problems += 1
+
+    if not re.search(r"\.formula\s+\.expr\s*\{[^}]*font-family\s*:\s*var\(--math\)", html, re.I):
+        report.error("字体", f".formula .expr 没有 font-family: var(--math)：{FONT_HINT}")
         problems += 1
-    elif not re.search(r"@font-face\s*\{[^}]*url\(data:font/woff2;base64,", html, re.I):
-        report.error(
-            "手写体",
-            "@font-face 没用 data:font/woff2 内嵌：换台机器字体就掉档，离线单文件要求自带字形",
-        )
-        problems += 1
-    if not re.search(r"\.formula\s+\.expr\s*\{[^}]*font-family\s*:\s*var\(--hand\)", html, re.I):
-        report.error("手写体", f".formula .expr 没有 font-family: var(--hand)：{HAND_HINT}")
+    if not re.search(r"body\s*\{[^}]*font-family\s*:\s*var\(--text\)", html, re.I):
+        report.error("字体", f"body 没有 font-family: var(--text)：正文必须用手写体，不许退回无衬线")
         problems += 1
 
-    # 1b) var(--hand) 只能出现在纯数学选择器上：子集字体没有 CJK 字形，
-    #     挂到会含中文的元素（推导表、正文）上就会回退到本机系统字体，换机器字形就变。
+    # 1b) var(--math) 只许出现在纯数学元素上
     for selector, decls in css_rules(html):
-        if "var(--hand)" not in decls:
+        if "var(--math)" not in decls:
             continue
         key = re.sub(r"\s+", " ", selector.strip())
-        if key in HAND_SELECTORS:
+        if key in MATH_SELECTORS:
             continue
         report.error(
-            "手写体",
-            f"手写体挂在了「{key}」上：只许挂 {sorted(HAND_SELECTORS)}。"
-            "这些元素里一旦出现中文（推导表的式子/依据列），就会回退到系统字体",
+            "字体",
+            f"数学字体挂在了「{key}」上：只许挂 {sorted(MATH_SELECTORS)}。"
+            "这些元素里一旦出现中文或单位，就会回退到系统字体",
         )
         problems += 1
 
-    # 1c) 字形覆盖：公式元素里每个字符都必须在内嵌子集里
-    coverage = hand_cmap(html)
-    if coverage is None:
-        report.warn("手写体", "读不出内嵌字体（fontTools 缺失或 base64 损坏），跳过字形覆盖检查")
+    # 1c) 字形覆盖：公式字符 ⊆ DeckMath，全部可见文字 ⊆ DeckText
+    math_cov = font_cmap(html, "DeckMath")
+    text_cov = font_cmap(html, "DeckText")
+    if math_cov is None or text_cov is None:
+        report.warn("字体", "读不出内嵌字体（fontTools 缺失或 base64 损坏），跳过字形覆盖检查")
     else:
+        if ord(" ") not in text_cov:
+            report.error("字体", "DeckText 子集缺空格 U+0020：空格会回退到系统字体（Chrome PDF 实测会带进 LXGW）")
+            problems += 1
         for slide in slides:
-            for label, frag in hand_fragments(slide.body):
+            for label, frag in math_fragments(slide.body):
                 text = html_mod.unescape(TAG_RE.sub("", frag))
-                missing = sorted({ch for ch in text if not ch.isspace() and ord(ch) not in coverage})
+                missing = sorted({ch for ch in text if not ch.isspace() and ord(ch) not in math_cov})
                 if missing:
                     report.error(
-                        "手写体",
-                        f"第 {slide.index} 页 {label} 有 {len(missing)} 个字符不在内嵌子集里："
+                        "字体",
+                        f"第 {slide.index} 页 {label} 有 {len(missing)} 个字符不在 DeckMath 子集里："
                         f"{''.join(missing)[:20]!r}——换台机器这些字会回退成系统字体",
                     )
                     problems += 1
+            visible = html_mod.unescape(TAG_RE.sub("", strip_math_spans(slide.body)))
+            missing = sorted({ch for ch in visible if not ch.isspace() and ord(ch) not in text_cov})
+            if missing:
+                report.error(
+                    "字体",
+                    f"第 {slide.index} 页正文有 {len(missing)} 个字符不在 DeckText 子集里："
+                    f"{''.join(missing)[:20]!r}——正文会回退到系统字体",
+                )
+                problems += 1
 
-    # 1d) 倾斜只许给行内公式：块级元素带 rotate/skew 会把表格/图注一起转斜
+    # 1d) 公式不许退回 <sub>/<sup> 平铺文本（参考图要求真上下标排版）
+    for slide in slides:
+        for label, frag in math_fragments(slide.body):
+            if re.search(r"<(sub|sup)\b", frag, re.I):
+                report.error(
+                    "字体",
+                    f"第 {slide.index} 页 {label} 里用了 <sub>/<sup>：公式必须由 mathrender 排真上下标，"
+                    "不许退回平铺文本",
+                )
+                problems += 1
+                break
+
+    # 1e) 倾斜：参考图无旋转，任何内容元素都不许 rotate/skew（#deck 的 scale 除外）
     for selector, decls in css_rules(html):
         if not re.search(r"transform\s*:[^;]*(rotate|skew)", decls, re.I):
             continue
         key = re.sub(r"\s+", " ", selector.strip())
-        if key in HAND_SELECTORS or key in TILT_ALLOWED:
-            continue
-        if re.search(r"\b(formula|details|table|td|th|figure|figcaption|h1|p|ul|ol|section)\b", key):
+        if re.search(r"\b(formula|details|table|td|th|figure|figcaption|h1|p|ul|ol|section|expr|eq)\b", key):
             report.error(
                 "倾斜",
-                f"「{key}」上有 rotate/skew：块级元素一转，里面的表格横线两端就出现高差"
-                "（1428px 宽的表在 0.3° 下差 7.5px）。倾斜只许挂在 .formula .expr 这种行内元素上",
+                f"「{key}」上有 rotate/skew：公式与表格必须水平（参考图无旋转）。"
+                "块级倾斜还会把表格横线拉出高差",
             )
             problems += 1
-
-    # 2) 下标写法：公式区里出现 X_y 就是没排成 <sub>
-    bad_sub = []
-    for slide in slides:
-        for m in re.finditer(
-            r'class="formula"[\s\S]*?</div>|<ol class="axioms">[\s\S]*?</ol>', slide.body
-        ):
-            chunk = TAG_RE.sub(" ", m.group(0))
-            for hit in re.finditer(r"[A-Za-zΑ-Ωα-ω]\(?_[A-Za-z0-9]{1,6}", chunk):
-                bad_sub.append((slide.index, hit.group(0)))
-    if bad_sub:
-        page, sample = bad_sub[0]
-        report.warn(
-            "下标写法",
-            f"第 {page} 页公式里出现 {sample} 这类下划线写法（共 {len(bad_sub)} 处）：手写数学该用 <sub>，"
-            "scaffold.subs() 会自动换",
-        )
 
     # 3) 折叠块展开后是否还装得下：静态可判的一半——复算表同页有图且行数多，必然裁掉
     for slide in slides:

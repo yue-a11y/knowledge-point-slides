@@ -4,6 +4,7 @@
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export SKILL_DIR
 PY="${PYTHON:-python3}"
 CHECK="$SKILL_DIR/scripts/check_deck.py"
 SCAFFOLD="$SKILL_DIR/scripts/scaffold.py"
@@ -53,7 +54,7 @@ expect 1 "式号重复/不连续被抓出" "$d/tafel-deck.html"
 d="$(fresh banned)"; sed -i 's|<h1>把 60 mV/dec 代回同一条直线：η = 300 mV 时 j/j₀ = 10⁵</h1>|<h1>谢谢观看</h1>|' "$d/tafel-deck.html"
 expect 1 "「谢谢观看」被抓出" "$d/tafel-deck.html"
 
-d="$(fresh font)"; sed -i 's/font-size: 20px; font-family/font-size: 16px; font-family/' "$d/tafel-deck.html"
+d="$(fresh font)"; sed -i 's/font-size: 21px/font-size: 16px/' "$d/tafel-deck.html"
 expect 1 "body 字号 <20px 被抓出" "$d/tafel-deck.html"
 
 d="$(fresh overflow)"; sed -i 's/overflow: hidden; //g' "$d/tafel-deck.html"
@@ -136,7 +137,19 @@ d="$(fresh phenom)"; sed -i 's|<h1>横轴换成过电位 η，不同样品的曲
 expect 1 "线性纵轴上说「变平」被抓出" "$d/tafel-deck.html"
 
 # ---- 公式 / 推导（正文） --------------------------------------------------
-d="$(fresh lhsdup)"; sed -i 's|<var data-sym="b">b</var> = Δ<var data-sym="η">η</var>|<var data-sym="η">η</var> = Δ<var data-sym="η">η</var>|' "$d/tafel-deck.html"
+d="$(fresh lhsdup)"
+"$PY" - "$d/tafel-deck.html" <<'PY'
+import os, pathlib, sys
+sys.path.insert(0, os.environ["SKILL_DIR"] + "/scripts")
+import scaffold
+MATH = scaffold.mathrender.math
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+old = MATH("b = Δη / Δlog_{10} j")
+idx = text.find('<div class="formula" data-eq="2">')
+j = text.find(old, idx)
+text = text[:j] + MATH("η = b") + text[j + len(old):]
+path.write_text(text, encoding="utf-8")
+PY
 expect 1 "公式 LHS 重复（移项另编号）被抓出" "$d/tafel-deck.html"
 
 d="$(fresh maxeq)"
@@ -158,7 +171,16 @@ expect 1 "显式设 --max-eq 2 时超上限被抓出" "$d/tafel-deck.html" --max
 d="$(fresh ops)"; sed -i 's|<p>斜率只由速率决定步骤定，与电流绝对值无关。</p>|<p>这里还没做 iR 补偿，所以要把读数往回推。</p>|' "$d/tafel-deck.html"
 expect 1 "讲补偿却没给定义式被抓出" "$d/tafel-deck.html"
 
-d="$(fresh sym)"; sed -i 's|<var data-sym="η">η</var> = <var data-sym="b">b</var> · log₁₀( <var data-sym="j">j</var> / <var data-sym="j0">j₀</var> )|<var data-sym="eta">η</var> = <var data-sym="beta">b</var> · log₁₀( <var data-sym="cur">j</var> / <var data-sym="cur0">j₀</var> )|' "$d/tafel-deck.html"
+d="$(fresh sym)"
+"$PY" - "$d/tafel-deck.html" <<'PY'
+import os, pathlib, sys
+sys.path.insert(0, os.environ["SKILL_DIR"] + "/scripts")
+import scaffold
+MATH = scaffold.mathrender.math
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text = text.replace(MATH("η = E − E_{eq}"), MATH("ξ = χ"), 1)
+path.write_text(text, encoding="utf-8")
+PY
 expect 1 "式里的符号图上都没有被抓出" "$d/tafel-deck.html"
 
 d="$(fresh noderiv)"
@@ -343,7 +365,7 @@ d="$(fresh c4d)"; sed -i 's|<td>定义：P1 已从 BV 推完这条形式</td>|<t
 expect 1 "C4：预备段内部用「由 P1 得」代替推理被抓出" "$d/tafel-deck.html"
 
 # ---- C5 公理清单 -----------------------------------------------------------
-d="$(fresh c5a)"; sed -i 's|<span class="eq">E_eq = 0.00 V</span>|<span class="eq">η 较大时可略还原项，E_eq = 0.00 V</span>|' "$d/tafel-deck.html"
+d="$(fresh c5a)"; sed -i 's|<span class="note">RHE 刻度、本例 pH 0</span>|<span class="note">η 较大时可略还原项；RHE 刻度、本例 pH 0</span>|' "$d/tafel-deck.html"
 expect 1 "C5：A 节里写近似被抓出" "$d/tafel-deck.html"
 
 d="$(fresh c5b)"; sed -i 's|<b>\[约定\]</b>|<b>[教科书结论]</b>|' "$d/tafel-deck.html"
@@ -372,12 +394,12 @@ expect 1 "C6：正文里出现「为了讲清楚 / 本节只」被抓出" "$d/ta
 # ---- C7 定义不推导 ---------------------------------------------------------
 d="$(fresh c7a)"
 "$PY" - "$d/tafel-deck.html" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-text = text.replace(
-    '<var data-sym="η">η</var> = <var data-sym="b">b</var> · log₁₀( <var data-sym="j">j</var> / <var data-sym="j0">j₀</var> )',
-    '<var data-sym="η">η</var> = <var data-sym="E">E</var> − <var data-sym="E_eq">E_eq</var>', 1)
+import os, pathlib, sys
+sys.path.insert(0, os.environ["SKILL_DIR"] + "/scripts")
+import scaffold
+MATH = scaffold.mathrender.math
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text = text.replace(MATH("j = j_0 e^{η/b_a}"), MATH("η ≡ E − E_{eq}"), 1)
 path.write_text(text, encoding="utf-8")
 PY
 expect 1 "C7a：把 η ≡ E − E_eq 重新立成 P1（定义当推导）被抓出" "$d/tafel-deck.html"
@@ -421,9 +443,13 @@ d="$(fresh c8a)"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-text = text.replace('<li data-axiom="A5" data-used-in="2,3"><b>[定义]</b> <span class="eq">k = Δy / Δx</span>',
-                    '<li data-axiom="A6" data-used-in="2"><b>[定义]</b> <span class="eq">b = Δη / Δlog₁₀ j</span><span class="note">斜率</span></li>'
-                    '<li data-axiom="A5" data-used-in="2,3"><b>[定义]</b> <span class="eq">k = Δy / Δx</span>', 1)
+import os
+sys.path.insert(0, os.environ["SKILL_DIR"] + "/scripts")
+import scaffold
+MATH = scaffold.mathrender.math
+anchor = '<li data-axiom="A5" data-used-in="2,3"><b>[定义]</b>'
+text = text.replace(anchor, '<li data-axiom="A6" data-used-in="2"><b>[定义]</b> <span class="eq">'
+                    + MATH("b = Δη / Δlog_{10} j") + '</span><span class="note">斜率</span></li>' + anchor, 1)
 path.write_text(text, encoding="utf-8")
 PY
 expect 1 "C8a：终点量 b 被写成 A 条目被抓出" "$d/tafel-deck.html"
@@ -433,8 +459,11 @@ d="$(fresh c8b)"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-text = text.replace('<li data-axiom="A4" data-used-in="6"><b>[约定]</b> <span class="eq">E_eq = 0.00 V</span>',
-                    '<li data-axiom="A4" data-used-in="6"><b>[约定]</b> <span class="eq">E_eq = η</span>', 1)
+import os
+sys.path.insert(0, os.environ["SKILL_DIR"] + "/scripts")
+import scaffold
+MATH = scaffold.mathrender.math
+text = text.replace(MATH("E_{eq} = 0.00 V"), MATH("E_{eq} = η"), 1)
 path.write_text(text, encoding="utf-8")
 PY
 expect 1 "C8b：A 的 RHS 以另一条 A 的 LHS 开头（公理互推）被抓出" "$d/tafel-deck.html"
@@ -478,7 +507,7 @@ text = re.sub(r'@font-face\s*\{[^}]*\}\s*', '', text, count=1)
 path.write_text(text, encoding="utf-8")
 PYEOF
 "$PY" "$CHECK" "$d/tafel-deck.html" >"$tmp/out.txt" 2>&1
-if grep -q "没有 DeckHand" "$tmp/out.txt"; then ok "缺 @font-face 手写体被拦"; else bad "缺 @font-face 手写体未被拦"; fi
+if grep -q "没有 DeckMath" "$tmp/out.txt"; then ok "缺 @font-face 数学字体被拦"; else bad "缺 @font-face 数学字体未被拦"; fi
 
 # 手写体：.formula 不用 var(--hand) 必须报错
 d="$(fresh noshots)"
@@ -486,11 +515,11 @@ d="$(fresh noshots)"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-text = text.replace("font-family: var(--hand);", "", 1)
+text = text.replace("font-family: var(--math);", "font-family: var(--text);", 1)
 path.write_text(text, encoding="utf-8")
 PYEOF
 "$PY" "$CHECK" "$d/tafel-deck.html" >"$tmp/out.txt" 2>&1
-if grep -q "没有 font-family: var(--hand)" "$tmp/out.txt"; then ok "公式未用手写体被拦"; else bad "公式未用手写体未被拦"; fi
+if grep -q "没有 font-family: var(--math)" "$tmp/out.txt"; then ok "公式未用数学字体被拦"; else bad "公式未用数学字体未被拦"; fi
 
 # 手写体：挂到块级 .formula 上必须报错（中文会回退系统字体）
 d="$(fresh noshots)"
@@ -498,12 +527,12 @@ d="$(fresh noshots)"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-text = text.replace(".formula .expr { display: inline-block; font-family: var(--hand);",
-                    ".formula { display: inline-block; font-family: var(--hand);", 1)
+text = text.replace("font-family: var(--math);", "font-family: var(--text);", 1)
+text = text.replace(".formula { font-size: 30px;", ".formula { font-family: var(--math); font-size: 30px;", 1)
 path.write_text(text, encoding="utf-8")
 PYEOF
 "$PY" "$CHECK" "$d/tafel-deck.html" >"$tmp/out.txt" 2>&1
-if grep -q "手写体挂在了" "$tmp/out.txt"; then ok "手写体挂到块级元素被拦"; else bad "手写体挂到块级元素未被拦"; fi
+if grep -q "数学字体挂在了" "$tmp/out.txt"; then ok "数学字体挂到块级元素被拦"; else bad "数学字体挂到块级元素未被拦"; fi
 
 # 手写体：公式里放中文（子集没有 CJK 字形）必须报错
 d="$(fresh noshots)"
@@ -511,12 +540,11 @@ d="$(fresh noshots)"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-text = text.replace('<var data-sym="b">b</var> = Δ<var data-sym="η">η</var> / Δlog₁₀ <var data-sym="j">j</var></span>',
-                    '<var data-sym="b">b</var> = Δ<var data-sym="η">η</var> / 对数</span>', 1)
+text = text.replace("</span></span></span>", "</span>对数</span></span>", 1)
 path.write_text(text, encoding="utf-8")
 PYEOF
 "$PY" "$CHECK" "$d/tafel-deck.html" >"$tmp/out.txt" 2>&1
-if grep -q "不在内嵌子集里" "$tmp/out.txt"; then ok "公式里放中文（字形回退）被拦"; else bad "公式里放中文未被拦"; fi
+if grep -q "不在 DeckMath 子集里" "$tmp/out.txt"; then ok "公式里放中文（字形回退）被拦"; else bad "公式里放中文未被拦"; fi
 
 # 倾斜：块级 .formula 上加 rotate 必须报错（表格会跟着斜）
 d="$(fresh noshots)"
@@ -524,8 +552,7 @@ d="$(fresh noshots)"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-text = text.replace(".formula { font-size: 26px; margin-top: 16px; }",
-                    ".formula { font-size: 26px; margin-top: 16px; transform: rotate(-0.3deg); }", 1)
+text = text.replace(".formula { font-size: 30px;", ".formula { transform: rotate(-0.3deg); font-size: 30px;", 1)
 path.write_text(text, encoding="utf-8")
 PYEOF
 "$PY" "$CHECK" "$d/tafel-deck.html" >"$tmp/out.txt" 2>&1
