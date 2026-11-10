@@ -3,3 +3,8 @@ tools/pandoc/
 __pycache__/
 *.pyc
 .DS_Store
+
+# 过程日志与截图：只本地保留，不进仓库
+/*-交付-*.md
+/收尾报告-*.md
+/*.png
