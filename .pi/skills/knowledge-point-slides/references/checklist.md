@@ -176,13 +176,25 @@ A–S 里凡是标「脚本」的，`check_deck.py` 会自己拦；标「人」�
 
 ## N 公式排版、字形覆盖与倾斜
 
-- [ ] 公式是一行 DSL 排出来的（`mathrender`）：变量斜体、数字/函数名正体、真上下标；没有 `<sub>/<sup>`
+- [ ] 公式是 `<math>` 里的 Presentation MathML（一行 DSL → `mathrender`）：变量 `<mi>`、数字 `<mn>`、
+      运算符 `<mo>`、上下标 `<msub>/<msup>/<msubsup>`、分式 `<mfrac>`、根式 `<msqrt>`；
+      没有 `<sub>/<sup>`、没有 `_`/`^` 拼接、没有 `.mth`/`.scr` 定位 span
+- [ ] **分式一律二维（C12）**：斜杠两侧各是一个完整式子的（`j/j₀`、`I/A`、`RT/α_aF`、
+      `Δη/Δlog₁₀ j`、`(η₂−η₁)/(log₁₀j₂−log₁₀j₁)`）都是 `<mfrac>`；
+      斜杠只出现在量纲写法（`mA/cm²`、`mV/dec`、`mol/L`）里，且两侧都是 `<mtext>` 单位词
+- [ ] **分母是整组**：`Δη/Δlog₁₀ j` 的 `j` 在分母里（不是 `Δη/Δ` 后面挂 `log₁₀ j`）；
+      `RT/α_aF` 的分母是 `α_aF` 整体；`<mfrac>` 后面没有紧跟操作数
+- [ ] 量纲词没有被排成二维分式（`mA/cm²` 不是 `<mfrac>`）；`0.1 M KOH` 这类浓度写法里 `M` 是单位词
+- [ ] 每个公式实例恰好一个 `<math>`；`<math>` 外没有公式内容（式号、单位行除外）；
+      散文里没有残留的 Unicode 上下标（`x²`/`η⁻¹`/`log₁₀`）
+- [ ] 没有引 MathJax / KaTeX / polyfill / CDN，没有用图片或 SVG 充当公式
 - [ ] 公式是白底 1px 方框、无旋转/下划线/底色；单位行与推导表在框外
 - [ ] 正文/标题/图注/表格文字用 `var(--text)` 手写体，没退回无衬线
 - [ ] `DeckMath` 与 `DeckText` 都内嵌（`data:font/woff2`）；子集 name 分别是 DeckMath / DeckText
 - [ ] 字符集含空格与伪元素字符；公式字符 ⊆ DeckMath、可见文字 ⊆ DeckText
-- [ ] `tools/measure_deck.py --fonts` 公式只报 DeckMath、正文只报 DeckText
+- [ ] `tools/measure_deck.py --fonts` 数学叶子（mi/mn/mo）只报 DeckMath、`<mtext>`/正文只报 DeckText
 - [ ] `pdffonts shots/deck-print.pdf` 只有 DeckText / DeckMath（无 LXGW / DejaVu / WenQuanYi）
+- [ ] 逐页 `document.querySelectorAll('math').length` 与该页公式清单条数一致
 - [ ] `tools/measure_deck.py --tilt` 表格 |Δy| ≤ 1px
 - [ ] 整份 HTML ≤320KB（数学子集 ~100KB base64 + 文本子集按字符数）
 

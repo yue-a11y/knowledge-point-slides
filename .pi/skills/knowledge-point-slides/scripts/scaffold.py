@@ -63,6 +63,12 @@ outline.json 结构（只列必需项，可省略的用默认值）:
   "recalc": [["输入", "计算", "结果", "对应"], ["j 0.50 → 23.2", "log₁₀", "1.667 dec", "第 5 页"]]
 }
 
+分式不用手写 `\\frac`：DSL 里写 `a/b`，mathrender 按契约自动切项——
+分子 = 斜杠前那一项（`2.303RT/α_aF` 的分子是 `2.303RT`），
+分母 = 斜杠后到加减/关系符/括号/中文注释为止的整组（`Δη/Δlog₁₀ j` 的分母是整个 `Δlog₁₀ j`），
+真分式一律出 `<mfrac>`；只有斜杠两侧都是单位词时（`mA/cm²`、`mV/dec`）才保留斜杠。
+所以上面 outline 里 `η = b · log₁₀( j / j₀ )` 生成的骨架就是二维，不靠人事后补。
+
 生成完还需要人做的：把 fig 里的 <svg> 换成真图（数据 + 渲染函数）、补刻度值。
 """
 
@@ -138,7 +144,10 @@ def text_face(charset: str) -> str:
             check=True, capture_output=True)
         from fontTools.ttLib import TTFont
 
-        font = TTFont(out)
+        # recalcTimestamp 是 TTFont 的构造参数（默认 True）：开着它每次 save 都把
+        # head.modified 刷成当前秒，重建同一份 deck 会得到逐字节不同的 woff2。
+        # 关掉后 head.modified 沿用源字体的值，构建可复现。
+        font = TTFont(out, recalcTimestamp=False)
         for name_id, value in ((1, "DeckText"), (3, "DeckText-Regular"), (4, "DeckText"),
                                (6, "DeckText-Regular"), (16, "DeckText"), (17, "Regular")):
             font["name"].setName(value, name_id, 3, 1, 0x409)
@@ -277,29 +286,82 @@ SUB = re.compile(r"(?<=[A-Za-zΑ-Ωα-ω0-9\)])_\{?([A-Za-z0-9]+)\}?")
 SUP = re.compile(r"(?<=[A-Za-zΑ-Ωα-ω0-9\)])\^\{?([A-Za-z0-9+\-]+)\}?")
 
 
-def subs(fragment: str) -> str:
-    """下划线/尖号写法换成真正的 <sub>/<sup>。
+def _unescape(fragment: str) -> str:
+    for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&amp;", "&"),
+                         ("&quot;", '"'), ("&#39;", "'")):
+        fragment = fragment.replace(entity, char)
+    return fragment
 
-    公式里写 E_eq 是编程写法，手写数学该是 E 下标 eq；只处理文本节点，
-    data-sym="E_eq" 这类属性保持原样（绑定检查靠它）。
+
+CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+MATH_SPAN_RE = re.compile(r"\$([^$]+)\$")
+# 散文里的「公式词」：含 Unicode 上下标或 _ / ^ 的一整个词（log₁₀、j₀、10⁻³、E_eq）
+TOKEN_RE = re.compile(r"[^\s，。、；：（）【】《》「」\[\]]+")
+UNICODE_SCRIPT_RE = re.compile("[\u2070-\u207f\u2080-\u209c\u00b9\u00b2\u00b3]")
+SCRIPT_TOKEN_RE = re.compile("[\u2070-\u207f\u2080-\u209c\u00b9\u00b2\u00b3_^]")
+
+
+def prose(fragment: str) -> str:
+    """散文 → HTML：含 Unicode 上下标 / _ / ^ 的词自动排成行内 <math>，其余原样转义。
+
+    这样作者在标题、正文、图注、单位行里照旧写 log₁₀、j₀、10⁻³，
+    产出的 HTML 里它们已经是 <math><msub>…</msub></math>（C11 查的就是这一点）。
     """
-    parts = TAG.split(fragment)
-    tags = TAG.findall(fragment)
-    out = []
-    for i, chunk in enumerate(parts):
-        if "<script" in chunk or chunk.strip() == "":
-            out.append(chunk)
+    out: list[str] = []
+    pos = 0
+    for match in TOKEN_RE.finditer(fragment):
+        out.append(esc(fragment[pos:match.start()]))
+        token = match.group(0)
+        if SCRIPT_TOKEN_RE.search(token):
+            out.append(mathrender.math(token, mark_syms=False))
         else:
-            chunk = SUB.sub(r"<sub>\1</sub>", chunk)
-            chunk = SUP.sub(r"<sup>\1</sup>", chunk)
-            out.append(chunk)
-        if i < len(tags):
-            out.append(tags[i])
+            out.append(esc(token))
+        pos = match.end()
+    out.append(esc(fragment[pos:]))
     return "".join(out)
 
 
+def subs(fragment: str, auto: bool = False) -> str:
+    """散文里的公式 → 行内 <math>；其余文字照常转义。
+
+    三条规则（写进 SKILL.md 与 check_deck.py 的 C9/C12）：
+      · `$…$` 里的内容按公式 DSL 排成行内 MathML（标题/正文/图注/单位行/推导表都能用）；
+      · auto=True（推导表的「式子」列、复算表的数值格）：整格就是一个 <math>，
+        中文注释进 <mtext>（仍用正文手写体），所以「失效：$Δlog$ …」不必手写 $…$；
+      · 「依据」列与正文是散文（auto=False），只认 `$…$`（否则「A2」会被排成 A 2）。
+    分式按 C12 自动二维：`a/b` 两侧各是一个完整式子 → <mfrac>；两侧都是单位词（mA/cm²）→ 留斜杠。
+    不允许再出现 <sub>/<sup>、E_eq 这种一行拼接、以及 Unicode 上下标（x²、η⁻¹、log₁₀）——
+    它们在 check_deck.py 里直接 error。
+    """
+    raw = _unescape(str(fragment))
+    if not raw.strip():
+        return ""
+    if auto:
+        # 整格公式：MathML 不会在行内折行，长句子会把表格撑出格。所以按中文标点切成
+        # 几个 <math>（标点留在外面），表格就能在标点处换行，而每个公式片段仍是 <math>。
+        chunks = re.split(r"([，；：。])", raw.replace("$", ""))
+        formulaChar = re.compile(r"[^\s\u3400-\u4dbf\u4e00-\u9fff，；：。、（）【】《》「」—…“”‘’]")
+        return "".join(
+            esc(chunk) if chunk in "，；：。" or not formulaChar.search(chunk) else
+            mathrender.math(chunk, mark_syms=False)
+            for chunk in chunks if chunk
+        )
+    parts: list[str] = []
+    pos = 0
+    for match in MATH_SPAN_RE.finditer(raw):
+        parts.append(prose(raw[pos:match.start()]))
+        parts.append(mathrender.math(match.group(1), mark_syms=False))
+        pos = match.end()
+    parts.append(prose(raw[pos:]))
+    return "".join(parts)
+
+
 def expr_span(expr: str, syms: list[str] | None = None) -> str:
-    """把公式主体排成数学衬线（mathrender），再包成 .expr。"""
+    """把公式主体排成 Presentation MathML（mathrender），再包成 .expr（1px 方框由 CSS 给）。
+
+    真分式（`j/j_0`、`Δη/Δlog_{10} j`、`RT/α_aF`）由 mathrender 自动出 <mfrac>，
+    量纲写法（`mA/cm²`、`mV/dec`）自动保留斜杠——C12 的口径落在默认路径上。
+    """
     return f'<span class="expr">{mathrender.math(expr, syms)}</span>'
 
 
@@ -339,18 +401,18 @@ def figure(spec: dict, caption: str, anim: str = "", compact: bool = False) -> s
       {ticks(spec, 'x')}
       {ticks(spec, 'y')}
     </svg>
-    <figcaption>{esc(caption)}</figcaption>
+    <figcaption>{subs(caption)}</figcaption>
   </figure>"""
 
 
 def formula_block(spec: dict) -> str:
     rows = "".join(
-        f"<tr><td>{esc(step)}</td><td>{subs(esc(body))}</td><td>{subs(esc(basis))}</td></tr>"
+        f"<tr><td>{esc(step)}</td><td>{subs(body, auto=True)}</td><td>{subs(basis)}</td></tr>"
         for step, body, basis in spec.get("deriv", [])
     )
     return f"""  <div class="formula" data-eq="{spec['eq']}">
     <span class="eqno">式 ({spec['eq']})</span>{expr_span(spec["expr"], spec.get("syms"))}
-    <span class="units">{esc(spec.get('units', 'TODO 符号与单位'))}</span>
+    <span class="units">{subs(spec.get('units', 'TODO 符号与单位'))}</span>
     <details class="deriv" data-eq="{spec['eq']}">
       <summary>推导：式 ({spec['eq']})</summary>
       <table>
@@ -363,7 +425,7 @@ def formula_block(spec: dict) -> str:
 def deriv_part_block(spec: dict) -> str:
     """一条式子的推导跨页时，第 2 片起单独成一页：data-eq 同号 + data-part 递增。"""
     rows = "".join(
-        f"<tr><td>{esc(step)}</td><td>{esc(body)}</td><td>{esc(basis)}</td></tr>"
+        f"<tr><td>{esc(step)}</td><td>{subs(body, auto=True)}</td><td>{subs(basis)}</td></tr>"
         for step, body, basis in spec.get("deriv", [])
     )
     return f"""  <details class="deriv" data-eq="{spec['eq']}" data-part="{spec['part']}">
@@ -376,7 +438,9 @@ def deriv_part_block(spec: dict) -> str:
 
 def recalc_block(rows: list[list[str]], open_block: bool = False) -> str:
     body = "".join(
-        "<tr>" + "".join(f"<td>{esc(cell)}</td>" for cell in row) + "</tr>" for row in rows
+        "<tr>" + "".join(
+            f"<td>{subs(cell, auto=not CJK_RE.search(cell))}</td>" for cell in row
+        ) + "</tr>" for row in rows
     )
     return f"""  <details class="recalc" open>
     <summary>数值复算</summary>
@@ -389,12 +453,12 @@ def recalc_block(rows: list[list[str]], open_block: bool = False) -> str:
 def p_formula_block(spec: dict) -> str:
     """预备段的一条 P 式：数据属性（used-in / stop / axiom）和正文式一样都挂在 .formula 上。"""
     rows = "".join(
-        f"<tr><td>{esc(step)}</td><td>{subs(esc(body))}</td><td>{subs(esc(basis))}</td></tr>"
+        f"<tr><td>{esc(step)}</td><td>{subs(body, auto=True)}</td><td>{subs(basis)}</td></tr>"
         for step, body, basis in spec.get("deriv", [])
     )
     return f"""  <div class="formula" data-eq="{spec['eq']}" data-used-in="{spec['used_in']}" data-axiom="{spec['axiom']}" data-stop="{esc(spec.get('stop', ''))}">
     <span class="eqno">{spec['eq']}</span>{expr_span(spec["expr"], spec.get("syms"))}
-    <span class="units">{esc(spec.get('units', 'TODO 符号与单位'))}</span>
+    <span class="units">{subs(spec.get('units', 'TODO 符号与单位'))}</span>
     <details class="deriv" data-eq="{spec['eq']}" open>
       <summary>推导：{spec['eq']}</summary>
       <table>
@@ -415,7 +479,7 @@ def axiom_block(outline: dict) -> str:
         items += (
             f'<li data-axiom="{aid}" data-used-in="{used_in}"><b>[{tag}]</b> '
             f'<span class="eq">{mathrender.math(eq, [])}</span>'
-            f'<span class="note">{note}</span></li>'
+            f'<span class="note">{subs(note)}</span></li>'
         )
     return f'  <ol class="axioms">{items}</ol>'
 
@@ -458,14 +522,14 @@ def slide_html(slide: dict, page: int, total: int) -> str:
         attrs += ' data-reads="' + esc(slide["reads"]) + '"'
     parts = [
         f"<section {attrs}>",
-        f"  <h1>{esc(slide['h1'])}</h1>",
+        f"  <h1>{subs(slide['h1'])}</h1>",
     ]
     if slide.get("axioms_html"):
         parts.append(slide["axioms_html"])
     if slide.get("io"):
-        parts.append('  <p class="io">' + esc(slide["io"]) + "</p>")
+        parts.append('  <p class="io">' + subs(slide["io"]) + "</p>")
     if slide.get("recast"):
-        parts.append(f'  <p class="recast">{esc(slide["recast"])}</p>')
+        parts.append(f'  <p class="recast">{subs(slide["recast"])}</p>')
     if slide.get("fig"):
         # 同页还有公式/复算表时图必须让出高度，否则 details 一展开就超出 900px
         compact = bool(slide.get("formula") or slide.get("recalc")) or slide.get("compact", False)
@@ -478,15 +542,15 @@ def slide_html(slide: dict, page: int, total: int) -> str:
         parts.append(deriv_part_block(slide["deriv_part"]))
     if slide.get("pitfalls"):
         items = "".join(
-            f'<li><b>错误做法：</b>{esc(bad)}<b>现象：</b>{esc(seen)}<b>正确做法：</b>{esc(good)}</li>'
+            f'<li><b>错误做法：</b>{subs(bad)}<b>现象：</b>{subs(seen)}<b>正确做法：</b>{subs(good)}</li>'
             for bad, seen, good in slide["pitfalls"]
         )
         parts.append(f'  <ul class="pit">{items}</ul>')
     if slide.get("items"):
-        items = "".join(f"<li>{esc(item)}</li>" for item in slide["items"])
+        items = "".join(f"<li>{subs(item)}</li>" for item in slide["items"])
         parts.append(f'  <ul class="items">{items}</ul>')
     if slide.get("lead"):
-        parts.append(f'  <p class="lead">{esc(slide["lead"])}</p>')
+        parts.append(f'  <p class="lead">{subs(slide["lead"])}</p>')
     if slide.get("recalc"):
         parts.append(recalc_block(slide["recalc"], slide.get("open_recalc", False)))
     parts.append(f'  <span class="pg">{page} / {total}</span>')

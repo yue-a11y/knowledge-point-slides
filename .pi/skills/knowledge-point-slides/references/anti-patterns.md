@@ -262,16 +262,48 @@
 - **改**：公式挂 `DeckMath`、正文挂 `DeckText`，两套子集都内嵌；子集 name 分别改成 DeckMath / DeckText；
   验收用 `tools/measure_deck.py --fonts`（公式只报 DeckMath、正文只报 DeckText）与「屏蔽系统字体后逐像素比对」。
 
-## 26. 公式退回 `<sub>/<sup>` 平铺文本（没有真上下标排版）
+## 26. 公式退回平铺文本（`<sub>/<sup>`、`_` 拼接、`.mth` 定位 span）
 
-- **错**：`η = b·log<sub>10</sub>(j/j<sub>0</sub>)`，指数里再放 `η/b<sub>a</sub>` 就只能靠 `<sup>` 套 `<sub>`，
-  嵌套后字号/基线全乱；再想排 `e^{η/b_a}` 这种指数内斜杠分式就排不出来。
-- **为什么错**：参考图的观感来自「数学排版」：斜体变量、正体 e、指数整体抬到 x-height 之上、
-  嵌套下标逐级缩到 0.5 倍。`<sub>/<sup>` 是行内文本的上下标，不是数学排版，嵌套时没有基线规则。
-- **拦它的规则**：C10（`.expr` / `.eq` 里出现 `<sub>`/`<sup>` → error）+ mathrender 的 DSL
-  （`_` / `^` 接 `{}` 组，可嵌套）。
-- **改**：公式写成 DSL（`j = j_0 e^{η/b_a}`），由 `scripts/mathrender.py` 排；
-  上下标 0.7em、嵌套 ×0.72、上标 `-.42em`、下标 `+.2em`，全部 `line-height: 0`。
+- **错**：`η = b·log<sub>10</sub>(j/j<sub>0</sub>)`；或 `<span class="mth"><span class="scr sub">0</span></span>`
+  先排好位置再写死；或者干脆把 `T_0`、`log₁₀` 直接当字符串写进页面。
+- **为什么错**：三者都不是数学结构。`<sub>/<sup>` 嵌套时没有基线/字号规则（指数里再放下标就乱），
+  定位 span 是像素级手排、改字就错位，`_` 与 Unicode 上下标根本没法逐层校验；
+  它们都绕开了「变量 / 数字 / 运算符 / 上下标 / 分式」这一层结构，机器判不出对错。
+- **拦它的规则**：C9（公式区域里不是恰好一个 `<math>`、`<math>` 外还有公式内容、`<math>` 文本里
+  有 `_`/`^` → error）、C10（`.mth`/`.scr`、MathJax/KaTeX/polyfill/图片顶替 → error）、
+  C11（公式外残留 Unicode 上下标 → error）。
+- **改**：公式写成 DSL（`j = j_0 e^{η/b_a}`），由 `scripts/mathrender.py` 排成 Presentation MathML：
+  变量 `<mi>`、数字 `<mn>`、运算符 `<mo>`、上下标 `<msub>/<msup>/<msubsup>`、分式 `<mfrac>`、
+  根式 `<msqrt>`、中文注释 `<mtext>`。散文里的 `log₁₀` / `j₀` 由 `scaffold.subs()` 自动转成行内 `<math>`。
+
+## 27. 拿 weasyprint 的 PDF 当公式观感对照
+
+- **错**：`weasyprint -p deck.html shots/deck-print.pdf` 之后拿这份 PDF 判断「公式排得好不好」。
+- **为什么错**：weasyprint 70.0 **不支持 MathML**（实测）：`<math>` 被当未知行内元素，
+  上下标拍平、分式塌成一行、变量斜体丢失。它出的 PDF 公式全是错的，页数对不代表观感对。
+- **拦它的规则**：打印源固定为 `tools/shoot_deck.py`（Chromium `page.pdf()`），
+  `check_deck.py` 的截图检查要求 `shots/deck-print.pdf` 来自浏览器路径。
+- **改**：观感只看 Chromium 屏幕截图与 `deck-print.pdf`（同一引擎）；weasyprint 仅用于页数交叉验证。
+
+## 28. 分式写成一维斜杠 / 量纲排成二维 / 分母只框一个 token
+
+- **错**（三种常见形态，全都亲眼见过）：
+  1. 真分式写成斜杠：`η = b·log₁₀(j/j₀)`、`k = Δη/Δlog₁₀ j`、`η = (RT/α_aF)ln(j/j₀)`——
+     斜杠两侧是**两个物理量**，却排成一行。
+  2. 量纲写成二维：`mA/cm²`、`mV/dec` 被排成 `<mfrac>`（分数线的上下两个单位）。
+  3. 分母只框一个 token：`\frac{RT}{α}_aF`（分母只有 `α`，`aF` 挂在分式外面）、
+     `\frac{Δη}{Δ}log_{10} j`（`j` 掉在分母外）——看上去像分式，读起来是另一个式子。
+- **为什么错**：一行斜杠在 1600×900 的投影上分不清分子分母到哪结束（`RT/α_aF·η` 到底是谁乘谁？）；
+  量纲写成二维会让人把单位当成除法运算（`mA/cm²` 是一个单位，不是“mA 除以 cm²”）；
+  分母只框一个 token 是最阴的错——**机器能看出分母不完整，读者却会按字面理解**。
+  三者都绕开了「斜杠两侧是什么」这个可判定判据，变成人工目检。
+- **拦它的规则**：C12（`check_deck.py` 的 `check_fraction_shape()`，全部 error）：
+  `<mo>/</mo>` 两侧不是量纲词 → error；`<mfrac>` 分子分母都是量纲词 → error；
+  `<mfrac>` 后面紧跟操作数（`mi/mn/msub/msup/mrow/mfrac/msqrt`）→ error。
+  默认路径已经对齐：`mathrender` 的 `a/b` 自动出 `<mfrac>`，`scaffold.py` 的骨架里真分式就是二维。
+- **改**：真分式写 `j/j_0`、`Δη/Δlog_{10} j`、`RT/α_aF`（不用手写 `\frac`，也不用给分母加 `{}`）；
+  量纲照旧写 `mA/cm²`、`mV/dec`（两侧都是单位词，渲染器自动保留斜杠）。
+  判据一句话：**把斜杠两侧念出来，是两个物理量就二维，是两个单位就留斜杠。**
 
 ---
 
@@ -281,6 +313,7 @@
 □ 有没有「变平 / 偏离直线 / 线性区」出现在非 log 纵轴的页？
 □ 换过坐标的页，轴标签、刻度、图注、正文、recast 五样都改了吗？
 □ 有没有哪条式只是另一个式的移项？
+□ 真分式都是二维吗？量纲（mA/cm²、mV/dec）都留斜杠吗？分母是整组吗？
 □ 讲补偿 / 外推 / 换算的页，给式了吗？
 □ Δ 标注的方向和轴对得上吗？
 □ 有没有两页在用同一张图讲不同的事？

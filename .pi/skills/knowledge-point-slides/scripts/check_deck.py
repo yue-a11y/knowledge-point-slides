@@ -116,7 +116,8 @@ EQ_ATTR_RE = re.compile(r"data-eq\s*=\s*\"(\d+)\"")
 H1_RE = re.compile(r"<h1\b[^>]*>(.*?)</h1>", re.S)
 TAG_RE = re.compile(r"</?[A-Za-z][^>]*>")  # 标签必须以字母开头：正文里的「差 < 1%」不是标签
 ATTR_RE = re.compile(r"([\w:.-]+)\s*=\s*\"([^\"]*)\"")
-VAR_SYM_RE = re.compile(r"<var\b[^>]*data-sym\s*=\s*\"([^\"]*)\"", re.I)
+# 符号声明：MathML 用 <mi data-sym="j">，旧 span 方案用 <var data-sym="j">（保留兼容解析）
+VAR_SYM_RE = re.compile(r"<(?:var|mi)\b[^>]*data-sym\s*=\s*\"([^\"]*)\"", re.I)
 ANY_SYM_RE = re.compile(r"data-sym\s*=\s*\"([^\"]*)\"", re.I)
 PATH_D_RE = re.compile(r"\b[dp]=\"([^\"]+)\"")
 POINTS_RE = re.compile(r"\bpoints=\"([^\"]+)\"")
@@ -129,7 +130,8 @@ UNIT_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mV/dec|mV\s*dec|dec|mA/cm²|mA/cm2
 UNIT_TOKEN_RE = re.compile(r"\d\s*(?:[A-Za-zµΩ°‰%][A-Za-z0-9µΩ°‰%/·²³⁻¹^*]*)")
 PITFALL_WORD = "错误做法"
 PG_RE = re.compile(r"<span\b[^>]*class=\"[^\"]*\bpg\b[^\"]*\"[^>]*>(.*?)</span>", re.S)
-RECAST_RE = re.compile(r"<[a-z]+\b[^>]*class=\"[^\"]*\brecast\b[^\"]*\"[^>]*>(.*?)</[a-z]+>", re.S)
+# recast 行里可能嵌 <math>（纵轴 log₁₀ j 之类），所以按标签名收尾，不能用 </[a-z]+>
+RECAST_RE = re.compile(r"<p\b[^>]*class=\"[^\"]*\brecast\b[^\"]*\"[^>]*>(.*?)</p>", re.S)
 
 RESOURCE_RE = re.compile(
     r"<(?:img|script|link|iframe|source|video|audio)\b[^>]*(?:src|href)\s*=\s*[\"'](https?:)?//",
@@ -166,8 +168,90 @@ class Report:
 # ---- 通用解析 -------------------------------------------------------------
 
 
+MATH_OPEN_RE = re.compile(r"<math\b", re.I)
+MATH_LEAF = {"mi", "mn", "mo", "mtext", "mspace", "ms"}
+MATH_WRAP = {"math", "mrow", "mstyle", "mpadded", "menclose", "mphantom", "semantics"}
+MATH_SCRIPT = {"msub", "msup", "msubsup"}
+
+
+def iter_math_blocks(fragment: str):
+    """遍历 <math>…</math>（MathML 不嵌套 math）：返回 (start, end, inner)。"""
+    pos = 0
+    while True:
+        match = MATH_OPEN_RE.search(fragment, pos)
+        if not match:
+            return
+        close = fragment.find("</math>", match.end())
+        if close == -1:
+            return
+        yield match.start(), close + len("</math>"), fragment[match.end():close]
+        pos = close + len("</math>")
+
+
+def _math_inner_text(inner: str) -> str:
+    """把 MathML 子树拍成可读文本：msub → base_sub、msup → base^sup、mfrac → 分子/分母。
+
+    校验脚本的下游规则（LHS 重复、公理重述、公式绑定）都按文本比对，
+    所以这里必须把结构还原成作者写 DSL 时的写法，不能只是去标签。
+    """
+    token_re = re.compile(r"<[^>]+>|[^<]+")
+    root: list[str] = []
+    stack: list[list] = [root]
+
+    def finish(tag: str, kids: list[str]) -> str:
+        joined = "".join(kids)
+        if tag == "msqrt":
+            return "√" + joined
+        if tag == "mfrac" and len(kids) >= 2:
+            return kids[0] + "/" + "".join(kids[1:])
+        if tag == "msub" and len(kids) >= 2:
+            return kids[0] + "_" + "".join(kids[1:])
+        if tag == "msup" and len(kids) >= 2:
+            return kids[0] + "^" + "".join(kids[1:])
+        if tag == "msubsup" and len(kids) >= 3:
+            return kids[0] + "_" + kids[1] + "^" + "".join(kids[2:])
+        return joined
+
+    for token in token_re.finditer(inner):
+        raw = token.group(0)
+        if raw.startswith("<"):
+            if raw.startswith("</"):
+                tag = raw[2:].strip(">").split()[0].lower() if len(raw) > 2 else ""
+                if len(stack) > 1:
+                    kids = stack.pop()
+                    stack[-1].append(finish(tag, kids))
+            elif raw.endswith("/>"):
+                continue
+            else:
+                stack.append([])
+        else:
+            if len(stack) > 1:
+                stack[-1].append(raw)
+    while len(stack) > 1:
+        kids = stack.pop()
+        stack[-1].append("".join(kids))
+    return "".join(root)
+
+
+def strip_math(fragment: str) -> str:
+    """去掉 <math>…</math>（含内部），留下公式外的文字。"""
+    out, pos = [], 0
+    for start, end, _ in iter_math_blocks(fragment):
+        out.append(fragment[pos:start])
+        pos = end
+    out.append(fragment[pos:])
+    return "".join(out)
+
+
 def text_of(fragment: str) -> str:
-    return re.sub(r"\s+", " ", TAG_RE.sub(" ", fragment)).strip()
+    """去标签取文本；MathML 子树先拍成 DSL 文本（j_0 / Δlog_10 j），再按原规则去标签。"""
+    expanded, pos = [], 0
+    for start, end, inner in iter_math_blocks(fragment):
+        expanded.append(fragment[pos:start])
+        expanded.append(" " + _math_inner_text(inner) + " ")
+        pos = end
+    expanded.append(fragment[pos:])
+    return re.sub(r"\s+", " ", TAG_RE.sub(" ", "".join(expanded))).strip()
 
 
 def sym_key(name: str) -> str:
@@ -1317,8 +1401,8 @@ def parse_axioms(page_body: str) -> dict[str, Axiom]:
         tag = next((item for item in AXIOM_TAGS if f"[{item}]" in text), "")
         eq_inner = find_span(inner, "eq")
         if eq_inner is not None:
-            # 下标写法 E<sub>eq</sub> 去标签后必须连成 Eeq，不能变成 "E eq" 两个 token
-            eq = TAG_RE.sub("", eq_inner).strip()
+            # MathML 子树按 DSL 拍平：E<msub>eq</msub> → E_eq（下标不许变成 "E eq" 两个 token）
+            eq = text_of(eq_inner)
         elif "</b>" in inner:
             eq = text_of(inner.split("</b>", 1)[-1])
         else:
@@ -1940,8 +2024,18 @@ def check_recalc(html: str, report: Report) -> None:
     if rows < 3:
         report.error("数值复算", f"复算表只有 {rows} 行：幻灯片上每个带单位的数都要有一行出处")
 
-    body = re.sub(r"<[^>]+>", " ", html)
-    lost = sorted({m.group(0).strip() for m in UNIT_NUM_RE.finditer(body) if m.group(1) not in block})
+    # 「数 + 单位」按归一化比对：MathML 把 60.0 / mV / dec 拆成不同标签，
+    # 复算表里又是另一种写法（cm² vs cm^2），先统一再查。
+    def unit_norm(text: str) -> str:
+        text = re.sub(r"\s*/\s*", "/", text)
+        text = re.sub(r"\s*\^\s*", "", text)
+        text = text.replace("²", "2").replace("³", "3")
+        return re.sub(r"(\d)\s+(?=[A-Za-zµ])", r"\1", text)
+
+    unit_re = re.compile(r"(\d+(?:\.\d+)?)(mV/dec|mVdec|dec|mA/cm2)")
+    body = unit_norm(re.sub(r"<[^>]+>", " ", html))
+    block_norm = unit_norm(block)
+    lost = sorted({m.group(0) for m in unit_re.finditer(body) if m.group(1) not in block_norm})
     if lost:
         report.warn("数值复算", f"这些数在复算表里找不到出处：{lost[:5]}")
     if "数值复算" in block and rows >= 3:
@@ -2026,10 +2120,11 @@ def check_shots(html_path: Path, pages: list[int], report: Report) -> None:
 
 
 FONT_HINT = ("公式用内嵌数学衬线（--math / DeckMath，参考图口径）；正文用内嵌手写体（--text / DeckText）；"
-             "公式里不许退回 <sub>/<sup> 平铺文本")
+             "公式必须是 <math> 里的 Presentation MathML（变量 <mi>、数字 <mn>、运算符 <mo>、"
+             "上下标 <msub>/<msup>、分式 <mfrac>、根式 <msqrt>），不许退回 <sub>/<sup> 或定位 span")
 
-# var(--math) 只许出现在纯数学元素上
-MATH_SELECTORS = {".formula .expr", "ol.axioms .eq", ".mth"}
+# var(--math) 只许出现在纯数学元素上（MathML 的 <math> 自己、.expr 方框、公理式的 .eq）
+MATH_SELECTORS = {".formula .expr", "ol.axioms .eq", "math", "math mtext"}
 
 
 def css_rules(html: str) -> list[tuple[str, str]]:
@@ -2090,7 +2185,12 @@ def find_span(html: str, cls: str) -> str | None:
 
 
 def strip_math_spans(body: str) -> str:
-    """去掉 <span class="expr|eq">…</span>（含嵌套 span），剩下的才是「正文文字」。"""
+    """去掉 <span class="expr|eq">…</span> 与所有 <math>…</math>，剩下的才是「正文文字」。"""
+    return strip_math(_strip_math_spans(body))
+
+
+def _strip_math_spans(body: str) -> str:
+    """去掉 <span class="expr|eq">…</span>（含嵌套 span）。"""
     out, i = [], 0
     pattern = re.compile(r'<span class="(expr|eq)">')
     while True:
@@ -2116,21 +2216,37 @@ def strip_math_spans(body: str) -> str:
     return "".join(out)
 
 
+def math_label(body: str, start: int) -> str:
+    """按出现位置判断这条 <math> 属于哪类公式（报错文案要能定位）。"""
+    head = body[:start]
+    # 最近的 <span class="expr"> / class="eq" 之后还没闭合 → 就是这条式子
+    open_expr = max(head.rfind('class="expr"'), head.rfind("class=\"expr\""))
+    if open_expr > head.rfind("</span>"):
+        return ".formula .expr"
+    if head.rfind('class="eq"') > head.rfind("</span>"):
+        return "ol.axioms .eq"
+    if head.rfind("<details") > head.rfind("</details>"):
+        return "推导表式子列"
+    return "行内公式"
+
+
 def math_fragments(body: str) -> list[tuple[str, str]]:
-    """取出会被数学字体渲染的片段：.formula .expr 与 ol.axioms .eq。"""
-    out: list[tuple[str, str]] = []
-    for cls, label in (("expr", ".formula .expr"), ("eq", "ol.axioms .eq")):
-        pos = 0
-        while True:
-            m = re.search(rf'<span\b[^>]*class="[^"]*\b{cls}\b[^"]*"[^>]*>', body[pos:])
-            if not m:
-                break
-            frag = find_span(body[pos + m.start():], cls)
-            if frag is None:
-                break
-            out.append((label, frag))
-            pos += m.start() + 1
-    return out
+    """取出每个 <math> 子树：字体覆盖按「MathML 文本 vs <mtext> 文本」分别核对。"""
+    return [(math_label(body, start), body[start:end]) for start, end, _ in iter_math_blocks(body)]
+
+
+def mtext_text(math_html: str) -> str:
+    """<math> 里 <mtext> 的内容：走正文手写体 DeckText（中文注释、单位词）。"""
+    out = []
+    for match in re.finditer(r"<mtext\b[^>]*>(.*?)</mtext>", math_html, re.S | re.I):
+        out.append(html_mod.unescape(TAG_RE.sub("", match.group(1))))
+    return "".join(out)
+
+
+def mathtext_only(math_html: str) -> str:
+    """<math> 里除 <mtext> 以外的文字：必须全部落在 DeckMath 子集里。"""
+    stripped = re.sub(r"<mtext\b[^>]*>.*?</mtext>", "", math_html, flags=re.S | re.I)
+    return html_mod.unescape(TAG_RE.sub("", stripped))
 
 
 def check_handwriting(html: str, slides: list[SlideInfo], report: Report) -> None:
@@ -2187,13 +2303,23 @@ def check_handwriting(html: str, slides: list[SlideInfo], report: Report) -> Non
             problems += 1
         for slide in slides:
             for label, frag in math_fragments(slide.body):
-                text = html_mod.unescape(TAG_RE.sub("", frag))
+                text = mathtext_only(frag)
                 missing = sorted({ch for ch in text if not ch.isspace() and ord(ch) not in math_cov})
                 if missing:
                     report.error(
                         "字体",
                         f"第 {slide.index} 页 {label} 有 {len(missing)} 个字符不在 DeckMath 子集里："
-                        f"{''.join(missing)[:20]!r}——换台机器这些字会回退成系统字体",
+                        f"{''.join(missing)[:20]!r}——换台机器这些字会回退成系统字体；"
+                        "中文/单位请放进 \\text{…}（<mtext>）",
+                    )
+                    problems += 1
+                inner = mtext_text(frag)
+                missing = sorted({ch for ch in inner if not ch.isspace() and ord(ch) not in text_cov})
+                if missing:
+                    report.error(
+                        "字体",
+                        f"第 {slide.index} 页 {label} 的 <mtext> 里有 {len(missing)} 个字符不在 DeckText 子集里："
+                        f"{''.join(missing)[:20]!r}——中文注释会回退成系统字体",
                     )
                     problems += 1
             visible = html_mod.unescape(TAG_RE.sub("", strip_math_spans(slide.body)))
@@ -2205,18 +2331,6 @@ def check_handwriting(html: str, slides: list[SlideInfo], report: Report) -> Non
                     f"{''.join(missing)[:20]!r}——正文会回退到系统字体",
                 )
                 problems += 1
-
-    # 1d) 公式不许退回 <sub>/<sup> 平铺文本（参考图要求真上下标排版）
-    for slide in slides:
-        for label, frag in math_fragments(slide.body):
-            if re.search(r"<(sub|sup)\b", frag, re.I):
-                report.error(
-                    "字体",
-                    f"第 {slide.index} 页 {label} 里用了 <sub>/<sup>：公式必须由 mathrender 排真上下标，"
-                    "不许退回平铺文本",
-                )
-                problems += 1
-                break
 
     # 1e) 倾斜：参考图无旋转，任何内容元素都不许 rotate/skew（#deck 的 scale 除外）
     for selector, decls in css_rules(html):
@@ -2252,6 +2366,326 @@ def check_handwriting(html: str, slides: list[SlideInfo], report: Report) -> Non
             )
     if not problems:
         report.ok("手写体与展开态")
+
+
+
+# ---- C9–C11：公式必须是结构化 MathML -------------------------------------
+
+MATH_ALLOWED = {"math", "mrow", "mi", "mn", "mo", "mtext", "mspace", "ms",
+                "msub", "msup", "msubsup", "mfrac", "msqrt", "mroot", "mover",
+                "munder", "munderover", "mtable", "mtr", "mtd", "mstyle",
+                "mpadded", "mphantom", "menclose", "mfenced"}
+MATH_BANNED_TAGS = {"semantics", "annotation", "annotation-xml", "span", "div",
+                    "sub", "sup", "b", "i", "em", "strong", "font", "var", "svg",
+                    "img", "table", "td", "p"}
+MATH_SRC_TAG_RE = re.compile(r"<([a-zA-Z][\w:-]*)\b[^>]*>")
+EXTERNAL_MATH_RE = re.compile(
+    r"(mathjax|katex|temml|mathml\.css|mathml-polyfill|mathjax@)",
+    re.I,
+)
+# 公式区域里不许出现的「平铺上下标」：Unicode 上下标字符
+UNICODE_SCRIPT_RE = re.compile(
+    "[\u2070-\u207f\u2080-\u209c\u00b9\u00b2\u00b3]"
+)
+# 单位里的上标 2 / 3（mA/cm²、m³）是 SI 写法，允许；其它位置一律算平铺
+UNIT_EXP_RE = re.compile(r"(?<![A-Za-z])(?:c|m|µ|u|n|d|k|p)?m[²³]|cm[²³]|m[²³]")
+
+
+def _formula_regions(slide: "SlideInfo") -> list[tuple[str, str, bool]]:
+    """公式区域：.expr / 公理 .eq（只能有一个 <math>）、推导表「式子」列（至少一个 <math>）。"""
+    regions: list[tuple[str, str, bool]] = []
+    for raw_attrs, inner in find_tags(slide.body, "div"):
+        if not has_class(raw_attrs, "formula"):
+            continue
+        head = inner.split("<details", 1)[0]
+        frag = find_span(head, "expr")
+        if frag is not None:
+            regions.append((".formula .expr", frag, True))
+    for match in re.finditer(r'<span\b[^>]*class="[^"]*\beq\b[^"]*"[^>]*>', slide.body):
+        frag = find_span(slide.body[match.start():], "eq")
+        if frag is not None:
+            regions.append(("ol.axioms .eq", frag, True))
+    for block in re.findall(r'<details class="deriv"[^>]*>.*?</details>', slide.body, re.S):
+        for row in re.findall(r"<tr\b[^>]*>(.*?)</tr>", block, re.S):
+            cells = re.findall(r"<td\b[^>]*>(.*?)</td>", row, re.S)
+            if len(cells) >= 2:
+                # 推导表式子列：长句会按中文标点切成几个 <math>（MathML 不能折行），
+                # 所以这里只要求「至少一个」，另外单独查「math 之外没有公式内容」
+                regions.append(("推导表式子列", cells[1], False))
+    return regions
+
+
+def check_mathml(slides: list["SlideInfo"], html: str, report: Report) -> None:
+    """C9 结构成层 / C10 无外部依赖与图片 / C11 公式外不残留平铺上下标。"""
+    problems = 0
+
+    # ---- C10-1 不许引 MathJax / KaTeX / polyfill / CDN ----
+    for needle in EXTERNAL_MATH_RE.findall(html):
+        report.error(
+            "MathML",
+            f"引了外部数学排版库「{needle}」：MathML 走浏览器原生排版，单文件离线，"
+            "不许 CDN / polyfill（断网就掉档）",
+        )
+        problems += 1
+        break
+    if re.search(r"<(?:img|object|embed)\b", html, re.I) and re.search(
+            r'class="[^"]*(expr|eq|formula)[^"]*"[^>]*>\s*<(?:img|object|embed)\b', html, re.I):
+        report.error("MathML", "公式区域用图片顶替：公式必须是 <math> 里的 MathML")
+        problems += 1
+    if re.search(r'class="mth"|class="scr\b|class="[^"]*\bscr\b', html):
+        report.error(
+            "MathML",
+            "源码里还有 .mth / .scr 定位 span：那是旧方案，公式必须是 <math> 元素（C9）",
+        )
+        problems += 1
+
+    for slide in slides:
+        # ---- C9-1 每个公式区域恰好一个 <math>，<math> 之外不许有公式内容 ----
+        for label, frag, exact in _formula_regions(slide):
+            blocks = list(iter_math_blocks(frag))
+            bad_count = len(blocks) != 1 if exact else not blocks
+            if bad_count:
+                report.error(
+                    "MathML",
+                    f"第 {slide.index} 页 {label} 里有 {len(blocks)} 个 <math>："
+                    + ("每个公式实例必须是且只是一个 <math> 元素"
+                       if exact else "含符号的格子至少要有一个 <math>（整条式子或 $…$）"),
+                )
+                problems += 1
+                continue
+            outside = strip_math(frag)
+            outside = re.sub(r"<[^>]+>", "", outside)
+            leak = outside.strip()
+            if not exact:
+                # 推导表格子可以有多段 <math>（按中文标点切开）；但 math 之外只许留标点与空白
+                litter = html_mod.unescape(TAG_RE.sub("", leak))
+                if re.search(r"[A-Za-zΑ-Ωα-ω0-9_^]", litter) or UNICODE_SCRIPT_RE.search(litter):
+                    report.error(
+                        "MathML",
+                        f"第 {slide.index} 页 {label} 的 <math> 之外还有公式内容「{leak[:24]}」："
+                        "符号与算子必须进 <math>，外面只留中文标点",
+                    )
+                    problems += 1
+                if re.search(r"[_^]", leak):
+                    report.error(
+                        "MathML",
+                        f"第 {slide.index} 页 {label} 的 <math> 之外还有 `_` / `^` 拼接"
+                        f"「{leak[:24]}」：上下标写进 $…$ 的 <msub>/<msup>",
+                    )
+                    problems += 1
+                continue
+            if leak:
+                report.error(
+                    "MathML",
+                    f"第 {slide.index} 页 {label} 的 <math> 之外还有公式内容「{leak[:24]}」："
+                    "式号、单位行可以留在外面，符号与算子必须进 <math>",
+                )
+                problems += 1
+
+        # ---- C9-2 结构成层：叶子白名单、必须有 mi/mo、不许整条塞 mtext ----
+        for start, end, inner in iter_math_blocks(slide.body):
+            tag = math_label(slide.body, start)
+            tags = [t.lower() for t in MATH_SRC_TAG_RE.findall(inner)]
+            banned = sorted(set(tags) & MATH_BANNED_TAGS)
+            if banned:
+                report.error(
+                    "MathML",
+                    f"第 {slide.index} 页 {tag} 的 <math> 里混进了 {banned}："
+                    "MathML 内只许 mi/mn/mo/mtext/mrow/msub/msup/mfrac/msqrt 这类数学元素",
+                )
+                problems += 1
+            if not ({"mi", "mn", "mo"} & set(tags)):
+                report.error(
+                    "MathML",
+                    f"第 {slide.index} 页 {tag} 的 <math> 没有 <mi>/<mn>/<mo> 叶子："
+                    "变量进 <mi>、数字进 <mn>、运算符关系符进 <mo>，不能整条式子只在 <mtext> 里",
+                )
+                problems += 1
+            mt = sum(len(html_mod.unescape(TAG_RE.sub("", m))) for m in
+                     re.findall(r"<mtext\b[^>]*>(.*?)</mtext>", inner, re.S))
+            total = len(html_mod.unescape(TAG_RE.sub("", inner)))
+            if total and mt and mt == total:
+                report.error(
+                    "MathML",
+                    f"第 {slide.index} 页 {tag} 整条式子都在一个 <mtext> 里："
+                    "这是把公式当文本，结构没分层（C9）",
+                )
+                problems += 1
+            leaf_text = TAG_RE.sub(" ", inner)
+            if "_" in leaf_text or "^" in leaf_text:
+                report.error(
+                    "MathML",
+                    f"第 {slide.index} 页 {tag} 的 <math> 文本里出现 `_` / `^`："
+                    "上下标必须写成 <msub>/<msup>/<msubsup>，不许用下划线拼接（T_0 形式）",
+                )
+                problems += 1
+
+        # ---- C11 公式外不许残留 Unicode 上下标 ----
+        visible = strip_math_spans(slide.body)
+        visible = re.sub(r"<svg\b.*?</svg>", "", visible, flags=re.S | re.I)
+        visible = re.sub(r"<style\b.*?</style>", "", visible, flags=re.S | re.I)
+        plain = html_mod.unescape(TAG_RE.sub("", visible))
+        for match in UNICODE_SCRIPT_RE.finditer(plain):
+            seg = plain[max(0, match.start() - 12):match.end() + 8]
+            if UNIT_EXP_RE.match(plain, match.start() - 1):
+                continue
+            report.error(
+                "MathML",
+                f"第 {slide.index} 页公式外残留 Unicode 上下标「{match.group(0)}」（…{seg}…）："
+                "把它写成 $…$ 里的 <msub>/<msup>（x²、η⁻¹、log₁₀ 一律不许平铺）",
+            )
+            problems += 1
+            break
+
+    if not problems:
+        report.ok("MathML 结构")
+
+
+# ---- C12：分式一律二维；斜杠只留给量纲 -------------------------------------
+
+MATH_TOKEN_RE = re.compile(r"<[^>]+>|[^<]+")
+# 量纲词表只有一份：从 mathrender 取，避免「渲染按一套、校验按另一套」
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mathrender import SINGLE_UNITS as _SINGLE_UNITS
+    from mathrender import UNITS as _UNITS
+    from mathrender import UNIT_LABELS as _UNIT_LABELS
+except Exception:  # pragma: no cover - 缺 mathrender 时退回最小集合
+    _UNITS, _SINGLE_UNITS, _UNIT_LABELS = set(), set(), set()
+UNIT_WORDS = set(_UNITS) | set(_SINGLE_UNITS)
+UNIT_LABELS = set(_UNIT_LABELS)  # mV/pH 这类：分母是「每 pH 单位」，按量纲词对待
+UNIT_WORD_RE = re.compile(r"[A-Za-zµμ°Ω‰]{1,6}")
+# 分式再挂上下标（\frac{a}{b}_x）也算分式
+FRACTION_WRAP = {"msub", "msup", "msubsup"}
+# 能当「分母后面的操作数」的节点：中文 mtext 不算（那是散文注释）
+OPERAND_TAGS = {"mi", "mn", "msub", "msup", "msubsup", "mfrac", "msqrt", "mrow"}
+
+
+class MathNode:
+    """<math> 子树的轻量节点：只为「斜杠左右是什么」「分式后面紧跟什么」这类邻接判断。"""
+
+    __slots__ = ("tag", "text", "kids")
+
+    def __init__(self, tag: str, text: str = "", kids: list | None = None) -> None:
+        self.tag = tag
+        self.text = text
+        self.kids = kids if kids is not None else []
+
+    def flat(self) -> str:
+        return self.text + "".join(kid.flat() for kid in self.kids)
+
+    def html(self, limit: int = 40) -> str:
+        if self.tag == "#text":
+            return self.text
+        inner = "".join(kid.html(limit) for kid in self.kids)
+        return f"<{self.tag}>{inner}</{self.tag}>"[:limit]
+
+
+def parse_math_tree(inner: str) -> MathNode:
+    """把 <math> 内部解析成 MathNode 树（不依赖第三方库，只认标签/文本）。"""
+    root = MathNode("#root")
+    stack = [root]
+    for token in MATH_TOKEN_RE.finditer(inner):
+        raw = token.group(0)
+        if raw.startswith("<"):
+            if raw.startswith("</"):
+                tag = raw[2:].strip(">").split()[0].lower() if len(raw) > 2 else ""
+                if len(stack) > 1 and stack[-1].tag == tag:
+                    stack.pop()
+            elif raw.endswith("/>"):
+                continue
+            else:
+                node = MathNode(raw[1:].strip(">").split()[0].lower())
+                stack[-1].kids.append(node)
+                stack.append(node)
+        else:
+            text = html_mod.unescape(raw)
+            if text.strip():
+                stack[-1].kids.append(MathNode("#text", text))
+    return root
+
+
+def _walk_math(node: MathNode):
+    yield node
+    for kid in node.kids:
+        yield from _walk_math(kid)
+
+
+def _unit_word(text: str) -> bool:
+    word = text.strip()
+    return word in UNIT_WORDS or UNIT_WORD_RE.fullmatch(word) is not None
+
+
+def _unitish(node: MathNode) -> bool:
+    """纯量纲文本：<mtext>mA</mtext>、<msup><mtext>cm</mtext><mn>2</mn></msup>、pH、外面再包 <mrow>。"""
+    if node.tag == "mtext":
+        return _unit_word(node.flat())
+    if node.tag == "mi" and node.flat() in UNIT_LABELS:
+        return True
+    if node.tag == "msup" and len(node.kids) == 2:
+        base, sup = node.kids
+        return (base.tag == "mtext" and _unit_word(base.flat())
+                and re.fullmatch(r"[−\-+]?\d+(?:\.\d+)?", sup.flat().strip()) is not None)
+    if node.tag == "mrow":
+        return bool(node.kids) and all(_unitish(kid) for kid in node.kids)
+    return False
+
+
+def _fraction_of(node: MathNode) -> MathNode | None:
+    """node 本身或它包着的 <mfrac>（分子分母都是量纲词的分式要靠它判）。"""
+    while node.tag in FRACTION_WRAP and node.kids:
+        node = node.kids[0]
+    return node if node.tag == "mfrac" else None
+
+
+def check_fraction_shape(slides: list["SlideInfo"], report: Report) -> None:
+    """C12：真分式排成 <mfrac>；<mo>/</mo> 只留给量纲写法（mA/cm²、mV/dec）。"""
+    problems = 0
+    for slide in slides:
+        for start, _end, inner in iter_math_blocks(slide.body):
+            label = math_label(slide.body, start)
+            for parent in _walk_math(parse_math_tree(inner)):
+                kids = parent.kids
+                for index, kid in enumerate(kids):
+                    if kid.tag == "mo" and kid.flat().strip() == "/":
+                        left = kids[index - 1] if index > 0 else None
+                        right = kids[index + 1] if index + 1 < len(kids) else None
+                        if (left is not None and right is not None
+                                and _unitish(left) and _unitish(right)):
+                            continue
+                        report.error(
+                            "分式",
+                            f"第 {slide.index} 页 {label} 的 <mo>/</mo> 两侧不是量纲词"
+                            f"（左={left.html() if left else '无'}，"
+                            f"右={right.html() if right else '无'}）："
+                            "真分式（分子、分母各是一个完整式子）必须排成 <mfrac>；"
+                            "斜杠只许用在量纲写法（mA/cm²、mV/dec）",
+                        )
+                        problems += 1
+                        continue
+                    frac = _fraction_of(kid)
+                    if frac is None or len(frac.kids) < 2:
+                        continue
+                    numerator, denominator = frac.kids[0], frac.kids[1]
+                    if _unitish(numerator) and _unitish(denominator):
+                        report.error(
+                            "分式",
+                            f"第 {slide.index} 页 {label} 的 <mfrac> 分子分母都是量纲词"
+                            f"（{numerator.flat()} / {denominator.flat()}）："
+                            "量纲写法保留斜杠，不要排成二维分式",
+                        )
+                        problems += 1
+                    following = kids[index + 1] if index + 1 < len(kids) else None
+                    if following is not None and following.tag in OPERAND_TAGS:
+                        report.error(
+                            "分式",
+                            f"第 {slide.index} 页 {label} 的 <mfrac> 后面紧跟 {following.html()}："
+                            "分母只框住了一个 token，后面的操作数掉到了分式外面——"
+                            "分母是整组（Δlog₁₀ j、α_aF）时要整组写进分母",
+                        )
+                        problems += 1
+    if not problems:
+        report.ok("分式二维")
 
 
 # ---- 主流程 ---------------------------------------------------------------
@@ -2310,6 +2744,8 @@ def main() -> int:
     check_prep_admission(prep_formulas, axioms, prep_blocks, report)
     check_axiom_scope(axioms, goal, slides, report)
     check_recalc(html, report)
+    check_mathml(slides, html, report)
+    check_fraction_shape(slides, report)
     check_handwriting(html, slides, report)
     check_viewport(html, report)
     check_size(html, report)

@@ -204,6 +204,10 @@ A4 = E_eq 约定、A5 = 直线斜率 k = Δy/Δx；P 只剩一条 `b = Δη/Δlo
 </section>
 ```
 
+上面 `.eq` 里的式子写的是 **DSL**（给人看的），产出 HTML 里是 `<span class="eq"><math>…</math></span>`
+（由 `scaffold.py` 从 outline 的 `eq` 字段生成）。分式按 C12 自动二维（`j = I/A`、`k = Δy/Δx`
+都是 `<mfrac>`），量纲写法（`mA/cm²`、`mV/dec`）保留斜杠。
+
 - 每条必须带标签，只许四种：`[定义]` / `[约定]` / `[定律]` / `[经验事实]`。判据：
   - **约定** = 刻度 / 参考点的选择（例：RHE 刻度下 HER 的 E_eq = 0.00 V）→ 标 `[约定]`，不标 `[经验事实]`
   - **定律** = 有独立实验支撑的唯象关系（例：BV 方程）
@@ -308,7 +312,7 @@ P3  b = Δη/Δlog₁₀j = (η₂−η₁)/(log₁₀j₂−log₁₀j₁)
   **正文算例段允许写「依据：P3（已在预备段完整推导）」**——理由：预备段存在的目的就是让后面能引用，而不是重推。
 - **每页 ≤1 条公式**不变。
 
-### 脚本硬校验（五条，全是 error，不是 warn）
+### 脚本硬校验（C1–C12，全是 error，不是 warn）
 
 | 编号 | 查什么 | 报错示例 |
 |---|---|---|
@@ -320,8 +324,12 @@ P3  b = Δη/Δlog₁₀j = (η₂−η₁)/(log₁₀j₂−log₁₀j₁)
 | C6 | 标题 / lead / 正文 / 列表里出现元话语黑名单词 | `第 3 页标题出现元话语「开讲前」：「开讲前先钉死五条…」` |
 | C7 | P 段准入：式子归一化后等于某条 A（定义不推导）、照抄公理 ≥2 行、步数 <3 或真实变换 <2 | `P1 是 A1 的重述，定义不推导` |
 | C8 | A 节收进终点量、A 之间互推、`[约定]` 里写「实测」 | `A5 的 LHS 是终点量 b，目标量不许进公理清单` |
+| C9 | MathML 结构：每个公式实例恰好一个 `<math>`；`<math>` 外无公式内容；叶子只用 mi/mn/mo/mtext/mrow/msub/msup/msubsup/mfrac/msqrt；整条式子不许只在一个 `<mtext>` 里；`<math>` 文本里不许 `_` / `^` | `第 5 页 推导表式子列 里有 0 个 <math>…` |
+| C10 | 无外部数学排版库（MathJax/KaTeX/polyfill/CDN）、无图片顶替公式、无 `.mth`/`.scr` 定位 span | `引了外部数学排版库「mathjax」…` |
+| C11 | 公式外（HTML 文本，跳过 `<svg>`）不许残留 Unicode 上下标；单位里的 ²/³（mA/cm²）例外 | `第 10 页公式外残留 Unicode 上下标「₁」…` |
+| C12 | 分式一律二维：`<mo>/</mo>` 只许夹在两侧都是量纲文本的位置（`<mtext>mA</mtext>`、`<msup><mtext>cm</mtext><mn>2</mn></msup>`）；`<mfrac>` 的分子分母不许都是量纲词；`<mfrac>` 后面不许紧跟操作数（分母只框一个 token） | `第 3 页 推导表式子列 的 <mo>/</mo> 两侧不是量纲词（左=<mi>j</mi>，右=<msub><mi>j</mi><mn>0</mn></msub>）…` |
 
-实现位置：`check_deck.py` 的 `check_formula_section()`（C1–C5）、`check_meta_discourse()`（C6）、`check_prep_admission()`（C7）、`check_axiom_scope()`（C8），与坐标系 / 推导检查分开。报错文案带页号 + `data-eq` + `data-sym`，便于回修。
+实现位置：`check_deck.py` 的 `check_formula_section()`（C1–C5）、`check_meta_discourse()`（C6）、`check_prep_admission()`（C7）、`check_axiom_scope()`（C8）、`check_mathml()`（C9–C11）、`check_fraction_shape()`（C12），与坐标系 / 推导检查分开。报错文案带页号 + `data-eq` + `data-sym`，便于回修。
 
 ## 页面规范
 
@@ -355,26 +363,90 @@ Ctrl+P 打印时必须不展开）。不许留在标题或 lead。
 - 阶梯必须完整：每步写清「输入 → 操作 → 输出 → 判据」，不跳中间步骤。
 - ≥3 条具名易错点，每条三段式：**错误做法 / 现象 / 正确做法**。写成「注意 XX」的视为没写；全部集中在 1 页（`data-kind="pitfall"`）。
 
-## 公式怎么排（数学衬线 + 文字手写 + 展开态）
+## 公式怎么排（Presentation MathML + 文字手写 + 展开态）
 
-公式不是正文的一部分：**公式按参考图排成数学衬线（Computer Modern 一族），正文文字用手写体**。
-两条线各用一套内嵌字体，互不继承。
+公式不是正文的一部分：**公式排成结构化的 Presentation MathML（Chromium 原生排版，
+变量斜体走 Latin Modern Math 的 MATH 表），正文文字用手写体**。两条线各用一套内嵌字体，互不继承。
 
-### 公式：Latin Modern Math + `mathrender`
+### 公式必须是 MathML（C9–C11，全部 error）
 
-- 式子写成一行 **DSL**（`j = j_0 e^{η/b_a}`），由 `scripts/mathrender.py` 排成 HTML：
-  `_` / `^` 接单字符或 `{…}` 组，可嵌套（`b_a` 在指数里也能再带下标）；`\text{…}` 走正体文字。
-- **变量斜体、数字/运算符/函数名正体**：拉丁与希腊小写单字母映射到数学斜体码位（𝑈+1D434…），
-  `e`、`exp`、`ln`、`log`、`Δ`、数字、括号一律正体。上下标 0.7em，嵌套再乘 0.72。
-- **指数抬到 x-height 之上**（`-.42em`），下标压到基线下（`+.2em`）；全部 `line-height: 0`，
-  不改变整行基线节奏，一行式子永远是一行。
-- **不许退回 `<sub>/<sup>` 平铺文本**：公式必须由 mathrender 排；`check_deck.py` 在
-  `.expr` / `.eq` 里发现 `<sub>`/`<sup>` 直接 error。
+产出的 HTML 里**每个公式实例都是一个 `<math>` 元素**：屏幕上量
+`document.querySelectorAll('math').length` 与该页公式清单逐条对得上；
+`<math>` 之外不许残留公式内容文本（式号、单位行除外）。
+
+- 结构成层：变量 `<mi>`、数字 `<mn>`、运算符/关系符 `<mo>`、上下标 `<msub>`/`<msup>`/`<msubsup>`、
+  分式 `<mfrac>`、根式 `<msqrt>`、中文注释与单位词 `<mtext>`。整条式子塞进一个 `<mtext>`、
+  或只有 `<semantics>`/`<annotation>` 带公式，都算没做。
+- 式子写成一行 **DSL**（`j = j_0 e^{η/b_a}`），由 `scripts/mathrender.py` 排成 `<math>`：
+  `_` / `^` 接单字符或 `{…}` 组（下标可连写 `E_eq` / `b_app`，多字母按正体标签排），
+  可嵌套（`b_a` 在指数里也能再带下标）；**真分式写 `a/b` 就自动排成 `<mfrac>`**
+  （`\frac{分子}{分母}` 也认，显式写法用于分子/分母里有加减的情形），
+  `\sqrt{…}` → `<msqrt>`，`\text{…}` → `<mtext>`（走正文手写体）。
+- **分式一律二维，量纲保留斜杠**（C12）：`/` 两侧都是单位词（`mA/cm²`、`mV/dec`、`mol/L`）时
+  才留斜杠；分子、分母各是一个完整式子时必须是 `<mfrac>`。细则见下节「分式与量纲斜杠」。
+- **变量斜体、数字/运算符/函数名正体**：单字母变量进 `<mi>`（浏览器按 MATH 表挑数学斜体字形），
+  `e`、`i`、`d` 与希腊大写写 `mathvariant="normal"`，函数名与多字母标签是正体 `<mi>`；
+  单位词（mV、dec、cm、mol…）落进 `<mtext>`。
+- **公式里的上下标只有一种写法**：`<msub>`/`<msup>`/`<msubsup>`。
+  `<sub>`/`<sup>`、`T_0` 这种下划线拼接、Unicode 上下标（`x²`、`η⁻¹`、`log₁₀`）在公式区域一律 error。
+  （旧版验收表里「下标写成 `<sub>` 不是 `_`」与「公式里不许出现 `<sub>`」互相打架，
+  2026-11 起统一成 MathML：`<sub>` 与 `_` 都不许，只用 `<msub>`。）
+- **散文里的公式词自动变行内 `<math>`**：`scaffold.subs()` 把标题/正文/图注/单位行/推导表里含
+  Unicode 上下标或 `_`/`^` 的词（`log₁₀`、`j₀`、`10⁻³`、`E_eq`）自动排成行内 `<math>`；
+  复杂式子用 `$…$` 显式包起来。**产出的 HTML 里不会有可见的纯文本公式**（C11 就在查这个）。
+- **推导表「式子」列整格是一个 `<math>`**：中文注释进 `<mtext>`，不要手写 `$…$`；
+  「依据」列是散文，只认 `$…$`。
 - **白底、1px 深色方框**（`#0f1115`，内边距 9–10px），无旋转、无下划线、无底色——参考图口径。
   方框只框式子本身（`.expr`），单位行与推导表留在框外。
+- **不引 MathJax / KaTeX / MathML polyfill / CDN，不用图片或 SVG 充当公式**（C10）：
+  Chromium 109+ 原生支持 MathML Core，单文件离线、断网打开仍成立。
 - 字体：`scripts/make_mathfont.py` 生成 `scripts/assets/mathfont.css`（Latin Modern Math 子集，
   woff2 约 75KB），子集内部 name 改成 `DeckMath`。换机器、断网都不掉档。
-- 字形覆盖：`.expr` / `.eq` 里每个字符都必须在内嵌 cmap 里（`check_deck.py` 解 base64 逐字核对）。
+- 字形覆盖：`<math>` 里除 `<mtext>` 外的每个字符都必须在 DeckMath 的 cmap 里，
+  `<mtext>` 的内容必须在 DeckText 的 cmap 里（`check_deck.py` 解 base64 逐字核对）。
+
+### 分式与量纲斜杠（C12，脚本 error）
+
+**分式一律二维，量纲保留斜杠。** 两类写法靠「斜杠两侧是什么」判定，不靠人眼：
+
+| 类别 | 判据（可机器判定） | 写法 | 例子 |
+|---|---|---|---|
+| **真分式** | 分子、分母**各是一个完整式子**（变量 / 数字 / 乘积链 / 带括号的整组 / 函数作用 / 幂或根式） | `<mfrac>` | `j/j₀`、`I/A`、`η/b_a`、`Δy/Δx`、`(η₂−η₁)/(log₁₀j₂−log₁₀j₁)` |
+| **量纲斜杠** | 斜杠两侧都是**单位词**（`<mtext>`），可带数字前缀与指数（`<msup><mtext>cm</mtext><mn>2</mn></msup>`） | `<mo>/</mo>` | `mA/cm²`、`mV/dec`、`mol/L`、`59.2 mV/dec` |
+
+判据一句话：**把斜杠两侧念出来，是两个物理量就是分式（二维），是两个单位就是一个单位写法（斜杠）。**
+`0.1 M KOH` 这类浓度写法里 `M` 是单位词（mol/L），根本不涉及斜杠。
+
+**「分母整组」是什么意思**（最常见的错处：分母只框了第一个 token）：
+
+- `Δη/Δlog₁₀ j` 的分母是**整个 `Δlog₁₀ j`**，不是 `Δ`，也不是 `Δlog₁₀`——`j` 必须在分母里。
+- `RT/α_aF` 的分母是 **`α_aF` 整体**（带上标），不是 `α` 或 `α_a`。
+- `2.303RT/α_aF` 的分子是 **`2.303RT` 整条乘积链**，不是只有 `T`。
+
+`mathrender.py` 的解析器直接按这个口径切项：分子取「斜杠前的那一项」（含 `·`/`×` 乘法链），
+分母取「斜杠后到加减/关系符/括号/中文注释为止的整项」，所以 DSL 里写 `Δη/Δlog_{10} j`、
+`RT/α_aF` 得到的就是整组分母，**不需要额外加 `{}`**。反过来，`\frac{RT}{α}_aF` 这种
+「分母只框一个 token、后面的操作数掉在分式外」的写法会被 C12 直接报错。
+
+脚本查三条（全部 error，报错带页号 + 位置 + 左右节点）：
+
+1. `<mo>/</mo>` 左右不是量纲文本 → `真分式（分子、分母各是一个完整式子）必须排成 <mfrac>`；
+2. `<mfrac>` 的分子分母都是量纲词 → `量纲写法保留斜杠，不要排成二维分式`（`mA/cm²` 不许二维）；
+3. `<mfrac>` 后面紧跟操作数（`mi/mn/msub/msup/mrow/mfrac/msqrt`）→ `分母只框住了一个 token`。
+
+量纲词表只有一份：`mathrender.UNITS` / `mathrender.SINGLE_UNITS`，`check_deck.py` 直接引用，
+渲染与校验不会各说一套。
+
+### 为什么不用自带定位 span（旧方案）与 weasyprint
+
+- **旧方案**（`.mth` / `.scr` 定位 span 手写上下标）已删：产出的公式不是结构化数学，
+  无法逐层校验。`check_deck.py` 发现 `.mth` / `.scr` 直接 error（C10）。
+- **weasyprint 不支持 MathML**（实测 70.0：`<math>` 当未知行内元素，上下标拍平、分式塌成一行、
+  变量斜体丢失）。所以 weasyprint **不再是打印源**，也不能拿它的输出做观感对照；
+  打印走 `tools/shoot_deck.py` 的 Chromium `page.pdf()`，屏幕态与 `deck-print.pdf` 同引擎同观感。
+  weasyprint 只剩「页数交叉验证」一个用途（页数由 `@page` + 每页一屏决定，与公式排版无关）。
+- **SVG 图内文字是图形标注，不是公式实例**：轴标签/刻度里的 `10⁻²`、`log₁₀ j [mA/cm²]`
+  保持 SVG 文本（MathML 不能进 `<text>`），C11 扫描时会跳过 `<svg>`。
 
 ### 文字：LXGW WenKai 子集（按 deck 现场生成）
 
@@ -563,7 +635,7 @@ DeckText / DeckMath。**不要用 weasyprint 当打印源**：它的 SVG `<text>
 | K | 公式最小集：LHS 不重复、式里的量在图上指得到（正文页）、操作词有定义式（上限默认不设，核心步骤一条不许跳） | 脚本 + 人 |
 | L | 页码齐、结构合规（S1 一页一条 P、S2 正文顺序、S3 calc 占比 ≥ 50%、条件页在前、错例 ≤1 页、动画 ≤3 且不重复、末页是 calc/pitfall，没有结论页） | 脚本 + 人 |
 | M | 无例题/自测页；体积与图是数据驱动生成 | 脚本 + 人 |
-| N | 公式用手写体且字形内嵌（`@font-face` + `url(data:font/woff2)`）、**只挂 `.formula .expr` / `ol.axioms .eq`**、公式字符全在子集 cmap 里；下标写成 `<sub>` 不是 `_`；**块级元素不倾斜**（表格横线两端 |Δy| ≤ 1px） | 脚本 + 人 |
+| N | 公式是 `<math>` 里的 Presentation MathML、结构成层（mi/mn/mo/msub/msup/mfrac/msqrt）；字形内嵌（`@font-face` + `url(data:font/woff2)`）、数学字体只挂 `math` / `.formula .expr` / `ol.axioms .eq`；`<math>` 字符全在 DeckMath、`<mtext>` 全在 DeckText；**下标只用 `<msub>`（`<sub>` 与 `_` 都不许）**；**真分式是 `<mfrac>`、量纲斜杠（mA/cm²、mV/dec）保留 `/`（C12）**；**块级元素不倾斜**（表格横线两端 |Δy| ≤ 1px） | 脚本 + 人 |
 | O | 折叠块展开后仍在一页内：`shoot_deck.py` 无「展开后溢出」；复算表单独成页；打印页数 == 幻灯片页数 | 脚本 + 人 |
 | **M2** | **公理清单：每条带 [定义]/[定律]/[经验事实] 之一、无禁用标签、A 节内无近似、无未被任何 P 引用的冗余公理** | 脚本 + 人 |
 | **N** | **每条 P 的推导首步依据命中 A 编号 / 定义；全文无「由式/由上可知/显然/易得/已知结论」；推导里至少一次 A 编号；P 号连号** | 脚本 + 人 |
@@ -609,7 +681,10 @@ DeckText / DeckMath。**不要用 weasyprint 当打印源**：它的 SVG `<text>
 - 推导里解释符号（「其中 j 为电流密度」）
 - 用「由式 (N) 得」代替推理
 - 另起一页写结论 / 小结 / 总结
-- 公式排在系统字体里（没有 `var(--hand)`），或用 `E_eq` 这种编程写法当页面对下标
+- 公式排在系统字体里（没有 `var(--math)`），或用 `E_eq` 这种编程写法当页面对下标
+- 公式退回 `.mth` / `.scr` 定位 span、`<sub>`/`<sup>` 平铺、或整条塞进一个 `<mtext>`（不是 MathML 就没有结构）
+- 引 MathJax / KaTeX / MathML polyfill / CDN，或用图片、SVG 充当公式
+- 公式外的正文里留 Unicode 上下标（`x²`、`η⁻¹`、`log₁₀`）：写 `$…$` 或让 `subs()` 自动转
 - 复算表/长推导与图挤在同一页，展开后被 `overflow:hidden` 裁掉下半截
 - 把上千个坐标点逐点写进 `points`
 - 把推论写进公理清单（Tafel 方程、Nernst 极限电流这类有推导来源的式子必须先证明）

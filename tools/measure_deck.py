@@ -11,7 +11,8 @@
 
     python3 tools/measure_deck.py work/<slug>/<slug>.html --fonts
         用 CDP 的 CSS.getPlatformFontsForNode 量公式元素**实际用了哪些字体**。
-        公式区应当只有 DeckHand；出现别的字体就说明字形回退到了系统字体。
+        公式区应当只有 DeckMath（MathML 里的 <math>），正文只有 DeckText；
+        出现别的字体就说明字形回退到了系统字体。
 
 退出码：有超阈值项 → 1，否则 0（可直接进 CI / 验收）。
 """
@@ -69,8 +70,11 @@ FONT_JS = """
     const add = (el, label) => {
       if (el) pick.push({ page: i + 1, label, node: el, text: (el.textContent || '').slice(0, 40) });
     };
-    slide.querySelectorAll('.formula .expr').forEach((el, k) => add(el, `式 ${k + 1}`));
-    slide.querySelectorAll('ol.axioms .eq').forEach((el, k) => add(el, `A${k + 1}`));
+    // CDP 的 getPlatformFontsForNode 只报「承载文本的节点」，<math> 自己不算：
+    // 量叶子 <mi>/<mn>/<mo>/<mtext>（每页抽前 4 个）
+    slide.querySelectorAll('math mi, math mn, math mo, math mtext').forEach((el, k) => {
+      if (k < 4) add(el, `math <${el.tagName.toLowerCase()}> ${k + 1}`);
+    });
     const td = slide.querySelector('details.deriv td:nth-child(2)');
     if (td) add(td, '推导式子列(正文体)');
     slide.classList.remove('active');
@@ -129,9 +133,10 @@ def measure_fonts(page, cdp) -> int:
         print(f"第 {it['page']:>2} 页 {it['label']:<12} {names}")
         if "正文体" in it["label"]:
             continue  # 推导表的式子列是正文体（不要求内嵌字形），只作对照
-        if any("DeckHand" not in f["familyName"] for f in fonts):
+        want = "DeckText" if "<mtext>" in it["label"] else "DeckMath"
+        if any(want not in f["familyName"] for f in fonts):
             bad += 1
-    print(f"公式元素 {len(items)} 个（其中推导表式子列只作对照）；用非 DeckHand 字体的 {bad} 个（验收 0）")
+    print(f"公式元素 {len(items)} 个（其中推导表式子列只作对照）；用非内嵌字体（DeckMath/DeckText）的 {bad} 个（验收 0）")
     return 0 if bad == 0 else 1
 
 

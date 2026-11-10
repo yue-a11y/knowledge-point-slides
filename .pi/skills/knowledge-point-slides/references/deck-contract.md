@@ -247,6 +247,7 @@
 | C6 | 标题 / lead / 正文 / 列表出现元话语黑名单词 | 首页标题「开讲前先钉死五条」 |
 | C7 | P 段准入：P 是某条 A 的重述；推导照抄公理 ≥2 行；<3 步或真实变换 <2 步 | 把 η ≡ E − E_eq 立成 P1 |
 | C8 | A 节收进终点量；A 之间互推；`[约定]` 里写「实测」 | A5 写成 `b ≡ 直线斜率` |
+| C12 | 分式一律二维：`<mo>/</mo>` 只许夹在两侧都是量纲文本之间（`<mtext>mA</mtext>`、`<msup><mtext>cm</mtext><mn>2</mn></msup>`）；`<mfrac>` 的分子分母不许都是量纲词；`<mfrac>` 后面不许紧跟操作数（分母只框一个 token） | `mA/cm²` 写成 `<mfrac>`；`RT/α_aF` 写成 `\frac{RT}{α}_aF`（分母只框了 α） |
 
 ## CSS 硬要求
 
@@ -283,6 +284,7 @@ addEventListener('wheel', e => go(e.deltaY > 0 ? +1 : -1), { passive: true });
 | 推导链「两边取对数 / 代入整理得 / 移项得」 | error |
 | 正文 `data-eq` 不连续，或某页 >1 条；P 号不连号；一条 P 拆成两页 | error |
 | 公式 LHS 重复（移项另编号） | error |
+| C12 分式不是 `<mfrac>`（真分式写成斜杠）；`<mo>/</mo>` 两侧不是量纲词；量纲词（mA/cm²、mV/dec）被排成 `<mfrac>`；`<mfrac>` 后面紧跟操作数（分母只框一个 token） | error |
 | 公式符号与图无交集 / 式内符号少于 2 个 | error |
 | 讲补偿/外推/换算却没给式 | error |
 | 图缺 `data-x`/`data-y`，轴标签缺失或与声明不符 | error |
@@ -334,7 +336,7 @@ addEventListener('wheel', e => go(e.deltaY > 0 ? +1 : -1), { passive: true });
 - 复算表和图挤一页 → 屏幕上点开「数值复算」，下半截被 `overflow:hidden` 裁掉（C10 +
   `shoot_deck.py` 展开态测量）
 
-## 公式渲染契约（数学衬线 + 文字手写）
+## 公式渲染契约（Presentation MathML + 文字手写）
 
 ```css
 @font-face { font-family: "DeckMath"; src: url(data:font/woff2;base64,…) format("woff2"); }
@@ -343,21 +345,35 @@ addEventListener('wheel', e => go(e.deltaY > 0 ? +1 : -1), { passive: true });
 body { font-family: var(--text); }                    /* 正文：手写体 */
 .formula .expr { border: 1px solid #0f1115; padding: 9px 10px;
                  font-family: var(--math); white-space: nowrap; }   /* 公式：数学衬线 + 1px 方框 */
-.mth .scr.sub { font-size: .7em; top: .2em; line-height: 0; }        /* 真下标 */
-.mth .scr.sup { font-size: .7em; top: -.42em; line-height: 0; }      /* 真上标 */
+math { font-family: var(--math); font-size: 1em; line-height: 1.25; }  /* 公式主体是 <math> */
+math mtext { font-family: var(--text); font-size: .92em; }            /* 中文注释/单位词走手写体 */
 ```
 
-- **公式**：一行 DSL → `scripts/mathrender.py` → HTML；变量斜体（数学斜体码位）、数字/运算符/函数名正体，
-  上下标 0.7em、嵌套 ×0.72，指数抬到 x-height 之上。**不许用 `<sub>/<sup>` 平铺文本**（脚本 error）。
+- **公式**：一行 DSL → `scripts/mathrender.py` → `<math>`（Presentation MathML）；变量进 `<mi>`
+  （数学斜体由 Latin Modern Math 的 MATH 表挑字形）、数字进 `<mn>`、运算符/关系符进 `<mo>`、
+  上下标进 `<msub>/<msup>/<msubsup>`、分式 `<mfrac>`、根式 `<msqrt>`、中文注释与单位词进 `<mtext>`。
+  **不许用 `<sub>/<sup>`、`_` 拼接或 `.mth`/`.scr` 定位 span**（C9/C10，脚本 error）。
+- **分式一律二维（C12，脚本 error）**：斜杠两侧**各是一个完整式子**（变量/数字/乘积链/括号整组/
+  函数作用/幂或根式）时，必须写成 `<mfrac>`；斜杠**只留给量纲写法**——两侧都是单位词
+  （`<mtext>mA</mtext>` / `<msup><mtext>cm</mtext><mn>2</mn></msup>`），可带数字前缀（`59.2 mV/dec`）。
+  DSL 里写 `a/b` 就自动排成 `<mfrac>`（`\frac{分子}{分母}` 也认），不需要人事后补。
+  **分母是整组**：`Δη/Δlog₁₀ j` 的分母是整个 `Δlog₁₀ j`（`j` 不能掉在外面），`RT/α_aF` 的分母是
+  `α_aF` 整体；解析器按「斜杠后到加减/关系符/括号/中文注释为止」切项，所以不必额外加 `{}`。
+  反例：`mA/cm²` 排成 `<mfrac>`、`j/j₀` 用 `<mo>/</mo>`、`\frac{RT}{α}_aF`（分母只框一个 token）。
+  量纲词表只有一份（`mathrender.UNITS` / `SINGLE_UNITS`），`check_deck.py` 直接引用。
+- **一个公式实例 = 一个 `<math>`**：`.expr`、公理 `.eq`、推导表式子列每格都只有一个 `<math>`，
+  `<math>` 之外只剩式号与单位行。散文里含 Unicode 上下标的词由 `scaffold.subs()` 自动转成行内 `<math>`。
 - **方框**：白底、1px `#0f1115`、内边距 9–10px、无旋转、无下划线、无底色（参考图口径）。
 - **文字**：`body` 必须 `var(--text)`（手写体），标题/正文/图注/表格文字全部继承，不许退回无衬线。
 - **两套字体都必须内嵌**：`DeckMath`（`scripts/assets/mathfont.css`，Latin Modern Math 子集）
   与 `DeckText`（按 deck 字符集现场子集化，`scaffold.embed_text_font`）。
   子集内部 name 分别是 `DeckMath` / `DeckText`，否则 `pdffonts` 与平台字体 API 分不清内嵌与回退。
 - **字符集必须含空格 U+0020** 与 CSS 伪元素 `content` 里的字符（`•`、`——`）：缺了会回退系统字体。
-- **字形覆盖**：公式字符 ⊆ DeckMath 的 cmap；每页可见文字 ⊆ DeckText 的 cmap（脚本逐字核对）。
-- **打印**：`tools/shoot_deck.py` 用浏览器打印生成 `deck-print.pdf`；weasyprint 的 SVG text 不走
-  `@font-face`，只用于页数交叉验证，不作为打印源。
+- **字形覆盖**：`<math>` 里除 `<mtext>` 外的字符 ⊆ DeckMath 的 cmap；`<mtext>` 与每页可见文字
+  ⊆ DeckText 的 cmap（脚本逐字核对）。
+- **打印**：`tools/shoot_deck.py` 用浏览器打印生成 `deck-print.pdf`（屏幕态与 PDF 同引擎）。
+  **weasyprint 不支持 MathML**（实测 70.0：上下标拍平、分式塌成一行），所以它既不是打印源，
+  也不能用作观感对照——只剩页数交叉验证。它的 SVG text 同样不走 `@font-face`。
 - 验收：`python3 tools/measure_deck.py <html> --fonts`（公式只报 DeckMath、正文只报 DeckText）、
   `pdffonts shots/deck-print.pdf`（只有 DeckText / DeckMath）。
 

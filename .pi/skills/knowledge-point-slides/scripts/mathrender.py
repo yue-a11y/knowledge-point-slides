@@ -1,235 +1,197 @@
 #!/usr/bin/env python3
-"""把一行数学式子排成「参考图」那种排版：衬线斜体变量、正体常数与数字、真上下标、指数内斜杠分式。
+"""把一行式子排成 Presentation MathML（<math> 元素），屏幕与打印走同一个排版。
 
-为什么自己写一个小排版器，而不是 MathML / KaTeX：
-  · KaTeX 要几十个字体文件 + 200KB JS，单文件 320KB 装不下；
-  · MathML 在 weasyprint 里不支持，打印与屏幕会不一致；
-  · 本仓库的式子只有「变量 / 数字 / 运算符 / 上下标 / 括号」这几种成分，
-    用 HTML 的定位 span 就能排准，而且两个渲染引擎（Chromium / weasyprint）都一致。
+为什么是 MathML，而不是自带定位 span：
+  · 「公式必须是结构化的 MathML」是硬约束：变量 <mi>、数字 <mn>、运算符 <mo>、
+    上下标 <msub>/<msup>/<msubsup>、分式 <mfrac>、根式 <msqrt> 各归其位，
+    纯文本/定位 span 平铺一律算没做（check_deck.py C9 起全部 error）。
+  · 不用 MathJax / KaTeX / polyfill / CDN：Chromium 109+ 原生支持 MathML Core，
+    单文件离线、断网打开仍成立；字体仍是内嵌的 DeckMath（Latin Modern Math 子集），
+    变量的数学斜体来自该字体的 MATH 表，不是 CSS 合成斜体。
+  · weasyprint **不支持 MathML**（实测 70.0：<math> 被当未知行内元素，上下标拍平、
+    分式塌成一行、斜体丢失）。所以 weasyprint 不再是打印源：打印走
+    tools/shoot_deck.py 的 Chromium page.pdf()，屏幕态与 deck-print.pdf 同引擎同观感；
+    weasyprint 只留作「页数交叉验证」（页数由 @page + 每页一屏决定，与公式排版无关）。
 
 用法（生成器里）:
     from mathrender import math
-    math("j = j_0 e^{η/b_a}")      →  <span class="mth">…</span>
+    math("j = j_0 e^{η/b_a}")
+        → <math xmlns="http://www.w3.org/1998/Math/MathML"><mi data-sym="j">j</mi>…
+
+分式一律二维（契约「分式与量纲斜杠」，check_deck.py C12 硬校验）:
+    真分式 = 分子、分母各是一个完整式子 → 排成 <mfrac>。DSL 里写 `a/b` 就自动二维，
+    不必手写 \\frac；\\frac{分子}{分母} 仍然可用（指数里也能嵌套）。
+    量纲斜杠 = 斜杠两侧都是单位词（mA/cm²、mV/dec、mol/L）→ 保留 <mo>/</mo>，不许二维。
+    「分母整组」：Δη/Δlog₁₀ j 的分母是整个 Δlog₁₀ j，RT/α_aF 的分母是 α_aF 整体；
+    解析时分子取「斜杠前的那一项」、分母取「斜杠后到加减/关系符为止的整项」，
+    所以 `Δη/Δlog_{10} j` 与 `RT/α_aF` 自动就是整组分母，不需要额外加 {}。
 
 语法（LaTeX 的一小撮）:
-    x_0 / x_{eq}        下标（单个字符或 {…} 组）
-    x^2 / x^{η/b_a}     上标；上标里可以再带下标（b_a）
-    \\text{…}            正体文字（函数名、单位、中文注释）
-    其余字符按「变量斜体 / 数字正体 / 运算符正体」自动分类
+    x_0 / x_{eq}          下标（单字符或 {…} 组）
+    x^2 / x^{η/b_a}       上标；上标里可以再带下标（b_a）
+    x_1^2                 上下标同时出现 → <msubsup>
+    a/b                   真分式 → <mfrac>；两侧都是单位词时保留斜杠（mA/cm²）
+    \\frac{分子}{分母}      显式真分式 → <mfrac>（指数里也能嵌套）
+    \\sqrt{x}              根式 → <msqrt>
+    \\text{…}              正体文字 → <mtext>（用正文手写体 DeckText 排，可放中文/单位）
+    其余字符自动分类：
+        变量 → <mi>（拉丁/希腊小写单字母，数学斜体；e、i、d 与希腊大写走正体）
+        数字 → <mn>；运算符/关系符/括号 → <mo>
+        单位词（mV、dec、cm、mol…，只在「字母连写且命中单位表」时）→ <mtext>
+        ×10ⁿ 这类 Unicode 上下标先由 normalize() 换成 _{} / ^{} 再解析
 
-排版规则（与参考图对齐）:
-    · 变量：拉丁/希腊小写单字母 → 数学斜体字形（U+1D434… / U+1D6FC…，真正的 CM 斜体，
-      不是 CSS 合成斜体）；大写希腊与数字、运算符、括号一律正体。
-    · e（自然常数）正体；exp / ln / log / sin / cos / tan / max / min 等函数名正体。
-    · 上下标字号 0.7em，嵌套再乘 0.72；上标抬到 x-height 之上（-.42em），
-      下标压到基线下（+.2em）；全部 line-height:0，不改变整行基线节奏。
-    · = ≡ ≈ ≤ ≥ 两侧 .28em，+ − × · / 两侧 .16em；逗号后 .12em。
+MathML 的排版细节交给浏览器：运算符间距、上下标缩放/位移、分式与根式的高度
+都按 MATH 表算（Latin Modern Math 的 scriptPercentScaleDown = 70%），
+所以本文件不再手写 top/line-height 之类的定位。
 """
 from __future__ import annotations
 
 import html
 import re
 
-# 数学斜体区块（Unicode Mathematical Alphanumeric Symbols）
-_IT_A, _IT_a = 0x1D434, 0x1D44E          # 𝐴…𝑍 / 𝑎…𝑧
-_IT_GREEK_a = 0x1D6FC                    # 𝛼…𝜔（小写）
+# 数学斜体区块（Unicode Mathematical Alphanumeric Symbols）—— 只在 plain() 里用来还原
+_IT_A, _IT_a = 0x1D434, 0x1D44E
+_IT_GREEK_a = 0x1D6FC
 GREEK_LOWER = "αβγδεζηθικλμνξοπρστυφχψω"
 GREEK_UPPER = "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ"
+GREEK = GREEK_LOWER + GREEK_UPPER
 
 FUNCS = ("exp", "ln", "log", "sin", "cos", "tan", "cot", "sec", "csc",
          "max", "min", "lim", "det", "arg", "Re", "Im")
 UPRIGHT_LETTERS = {"e", "i", "d"}        # 常数 / 微分算子：参考图里 e 是正体
 
-RELATIONS = set("=≡≈≅≃≠≤≥∼∝")
-BINARIES = set("+−-±∓×÷·⋅")
+# 单位词：字母连写命中这张表 → <mtext>（正文手写体），不当作变量斜体。
+# 只收不会与变量名冲突的多字母单位；单字母 V / A / K 有歧义（A 是面积、V 是电位），
+# 所以公式里要写单位请用 \\text{V}。
+# 多字母但整段正体的记号（不是几个变量相乘）：pH、pKa、RHE… 命中就整段一个 <mi>
+LABELS = ("pKa", "pH", "RHE", "SHE", "OCV", "EIS", "LSV", "HER", "OER", "ORR", "RDE", "RRDE")
+# 量纲位置上的非单位记号：mV/pH、mV/pKa 的分母是「每 pH 单位」，按量纲词对待
+UNIT_LABELS = {"pH", "pKa"}
+
+UNITS = {
+    "mV", "mA", "MV", "uA", "µA", "nA", "pA", "dec", "mol", "mmol", "min",
+    "sec", "cm", "mm", "nm", "µm", "um", "km", "dm", "ms", "us", "µs", "ns",
+    "Hz", "kHz", "MHz", "eV", "keV", "meV", "kJ", "cal", "atm", "bar",
+    "ppm", "ppb", "rpm",
+}
+
+# 单字母单位：只在「紧跟在数字后面、后面不再接字母」时才算单位（0.100 V、300 K）。
+# 这样 j = I / A 里的 A 仍是面积变量，2.303RT 里的 R、T 仍是变量。
+SINGLE_UNITS = {"V", "A", "K", "J", "W", "s", "m", "g", "L", "C", "N", "h"}
+
+RELATIONS = set("=≡≈≅≃≠≤≥∼∝<>")
+BINARIES = set("+−-±∓×÷·⋅∗")
 PUNCT = set(",;:")
+FENCES = set("()[]{}|")
+# 中文标点：整段是散文的一部分（推导表的注释），用 mtext 走正文手写体
+CJK_PUNCT = set("，。；：、（）【】《》「」『』—…“”‘’")
+
+# ---- 「分式还是量纲斜杠」的判定 ---------------------------------------------
+# 「项」的边界：加减、关系符、逗号、右括号、中文标点。遇到这些就停，
+# 于是 Δη/Δlog₁₀ j 的分母是整组 Δlog₁₀ j（不是只有 Δ），RT/α_aF 的分母是 α_aF 整组。
+TERM_STOP = (RELATIONS
+             | {"+", "−", "-", "±", "∓", "÷", "→", "←", "↔", "⇒", "⇔"}
+             | set(",;:)]}") | CJK_PUNCT)
+# 显式乘号：算在同一个「项」里（2.303RT/F 的分子是 2.303RT 整组）
+MULT_JOIN = set("·×∗⋅")
+# 能当操作数/分母节点的 MathML 种类
+OPERAND_KINDS = {"mi", "mn", "mtext", "msub", "msup", "msubsup", "mfrac", "msqrt"}
+# 成对的括号：整组当一个操作数（(η₂−η₁)/(…) 的分子就是整组括号）
+FENCE_PAIRS = {"(": ")", "[": "]"}
+
+
+def _unit_word(text: str) -> bool:
+    """单位词：命中单位表，或是 ≤6 个纯字母的短词（mol、mg、mL、dec…）。"""
+    word = text.strip()
+    return (word in UNITS or word in SINGLE_UNITS
+            or re.fullmatch(r"[A-Za-zµμ°Ω‰]{1,6}", word) is not None)
+
+
+def _numeric(node: tuple) -> bool:
+    """指数是不是「一个数」（2 / −1 / −3）。"""
+    if node[0] == "mn":
+        return True
+    if node[0] == "mo":
+        return node[1] in ("−", "-", "+")
+    if node[0] == "mrow":
+        return bool(node[1]) and all(_numeric(child) for child in node[1])
+    return False
+
+
+def _unit_text(node: tuple) -> bool:
+    """节点是不是纯量纲文本：<mtext>mA</mtext>、<msup><mtext>cm</mtext><mn>2</mn></msup>、pH。"""
+    if node[0] == "mtext":
+        return _unit_word(node[1])
+    if node[0] == "mi" and isinstance(node[1], str) and node[1] in UNIT_LABELS:
+        return True
+    if node[0] == "msup" and node[1][0] == "mtext":
+        return _unit_word(node[1][1]) and _numeric(node[2])
+    if node[0] == "mrow":
+        return bool(node[1]) and all(_unit_text(child) for child in node[1])
+    return False
+
+
+def _is_unit_expr(run: list[tuple]) -> bool:
+    """整段是不是「量纲写法」：单位词，或「一个数 + 单位词」（59.2 mV）。
+
+    是 → 斜杠保留（mA/cm²、mV/dec）；不是 → 真分式，排成 <mfrac>。
+    """
+    core = [n for n in run if not (n[0] == "mo" and n[1] in MULT_JOIN)]
+    if not core:
+        return False
+    lead = 1 if core[0][0] == "mn" else 0
+    return len(core) > lead and all(_unit_text(n) for n in core[lead:])
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _is_operand(node: tuple) -> bool:
+    """能当分子/分母一部分的节点；中文注释（mtext）不算，免得分母吞掉后面的散文。"""
+    if node[0] == "mtext" and _has_cjk(node[1]):
+        return False
+    return node[0] in OPERAND_KINDS or node[0] == "mrow"
+
+
+def _as_node(run: list[tuple]) -> tuple:
+    if len(run) == 1:
+        return run[0]
+    return ("mrow", run)
+
 
 TAG_RE = re.compile(r"<[^>]+>")
 
-
-def _italic(ch: str) -> str | None:
-    if "a" <= ch <= "z":
-        return chr(_IT_a + ord(ch) - ord("a"))
-    if "A" <= ch <= "Z":
-        return chr(_IT_A + ord(ch) - ord("A"))
-    if ch in GREEK_LOWER:
-        return chr(_IT_GREEK_a + GREEK_LOWER.index(ch))
-    return None
-
-
-def _span(cls: str, inner: str) -> str:
-    return f'<span class="{cls}">{inner}</span>' if cls else inner
-
-
-def _plain(html_fragment: str) -> str:
-    """把渲染片段还原成可读符号名：去掉标签、把数学斜体映射回 ASCII/希腊。"""
-    import html as _html
-
-    text = _html.unescape(TAG_RE.sub("", html_fragment))
-    out = []
-    for ch in text:
-        code = ord(ch)
-        if 0x1D434 <= code <= 0x1D44D:
-            out.append(chr(ord("A") + code - 0x1D434))
-        elif 0x1D44E <= code <= 0x1D467:
-            out.append(chr(ord("a") + code - 0x1D44E))
-        elif 0x1D6FC <= code <= 0x1D71B:
-            out.append(GREEK_LOWER[code - 0x1D6FC])
-        else:
-            out.append(ch)
-    return "".join(out)
-
-
-def _script(kind: str, body: str, depth: int) -> str:
-    # 多字母下标是「标签」（eq / ref / app），按正体排；单字母下标才是变量（a / c / i）
-    if re.fullmatch(r"[A-Za-z]{2,}", body):
-        inner = html.escape(body)
-    else:
-        inner = _render_tokens(_tokenize(body), depth + 1, wrap=False)
-    return f'<span class="scr {kind}">{inner}</span>'
-
-
-def _var(name: str, inner: str) -> str:
-    return f'<var data-sym="{name}">{inner}</var>'
-
-
-def _render_letter_run(run: str, depth: int, _wrap: bool = True) -> str:
-    """一段连续字母：函数名整体正体；变量逐字斜体并包成 <var data-sym>。"""
-    out = []
-    i = 0
-    while i < len(run):
-        for fn in FUNCS:
-            if run.startswith(fn, i):
-                out.append(f'<span class="fn">{fn}</span>')
-                i += len(fn)
-                break
-        else:
-            ch = run[i]
-            italic = _italic(ch)
-            if italic and ch not in UPRIGHT_LETTERS:
-                out.append(_var(ch, italic) if _wrap else italic)
-            else:
-                out.append(html.escape(ch))
-            i += 1
-    return "".join(out)
-
-
-def _tokenize(expr: str) -> list[tuple[str, str]]:
-    """切成 (类型, 内容)：text / group / sub / sup / letters / other。"""
-    tokens: list[tuple[str, str]] = []
-    i = 0
-    n = len(expr)
-    while i < n:
-        ch = expr[i]
-        if ch == "\\" and expr.startswith("\\text{", i):
-            depth, j = 1, i + 6
-            while j < n and depth:
-                if expr[j] == "{":
-                    depth += 1
-                elif expr[j] == "}":
-                    depth -= 1
-                j += 1
-            tokens.append(("text", expr[i + 6:j - 1]))
-            i = j
-            continue
-        if ch in "_^":
-            kind = "sub" if ch == "_" else "sup"
-            i += 1
-            if i < n and expr[i] == "{":
-                depth, j = 1, i + 1
-                while j < n and depth:
-                    if expr[j] == "{":
-                        depth += 1
-                    elif expr[j] == "}":
-                        depth -= 1
-                    j += 1
-                tokens.append((kind, expr[i + 1:j - 1]))
-                i = j
-            elif i < n:
-                tokens.append((kind, expr[i]))
-                i += 1
-            continue
-        if ch == "{":
-            depth, j = 1, i + 1
-            while j < n and depth:
-                if expr[j] == "{":
-                    depth += 1
-                elif expr[j] == "}":
-                    depth -= 1
-                j += 1
-            tokens.append(("group", expr[i + 1:j - 1]))
-            i = j
-            continue
-        if ch.isspace():
-            i += 1
-            continue
-        if ch.isalpha():
-            j = i
-            while j < n and expr[j].isalpha():
-                j += 1
-            tokens.append(("letters", expr[i:j]))
-            i = j
-            continue
-        j = i + 1
-        while j < n and not (expr[j].isalpha() or expr[j] in "_^{} \\") and not expr[j].isspace():
-            j += 1
-        tokens.append(("other", expr[i:j]))
-        i = j
-    return tokens
-
-
-def _render_tokens(tokens: list[tuple[str, str]], depth: int, wrap: bool = True) -> str:
-    out: list[str] = []
-    i = 0
-    while i < len(tokens):
-        kind, body = tokens[i]
-        # 变量 + 紧随的上下标 → 合成一个 <var data-sym="base_script">
-        if kind == "letters":
-            rendered = _render_letter_run(body, depth, wrap)
-            scripts = ""
-            j = i + 1
-            while j < len(tokens) and tokens[j][0] in ("sub", "sup"):
-                scripts += _script(tokens[j][0], tokens[j][1], depth)
-                j += 1
-            base = body if len(body) == 1 else ""
-            if body in FUNCS and scripts:
-                out.append(f'<span class="fn">{body}{scripts}</span>')
-                i = j
-                continue
-            if wrap and scripts and base and _italic(base) and base not in UPRIGHT_LETTERS:
-                # 变量 + 上下标合成一个 var；base 不再单独包 var（避免 var 套 var）
-                name = _plain(_italic(base)) + "_" + _plain(scripts)
-                out.append(_var(name, _italic(base) + scripts))
-            else:
-                out.append(rendered + scripts)
-            i = j
-            continue
-        if kind == "text":
-            out.append(_span("fn", html.escape(body)))
-        elif kind in ("sub", "sup"):
-            out.append(_script(kind, body, depth))
-        elif kind == "group":
-            out.append(_render_tokens(_tokenize(body), depth))
-        else:
-            for ch in body:
-                if ch in RELATIONS:
-                    out.append(f'<span class="rel">{html.escape(ch)}</span>')
-                elif ch in BINARIES:
-                    out.append(f'<span class="op">{html.escape(ch)}</span>')
-                elif ch == "/":
-                    out.append('<span class="slash">/</span>')
-                elif ch in PUNCT:
-                    out.append(f'<span class="punct">{html.escape(ch)}</span>')
-                else:
-                    out.append(html.escape(ch))
-        i += 1
-    return "".join(out)
-
-
 _SUB_DIGITS = {"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4",
-               "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9"}
+               "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9",
+               "₊": "+", "₋": "−", "₌": "=", "₍": "(", "₎": ")",
+               "ₐ": "a", "ₑ": "e", "ₕ": "h", "ᵢ": "i", "ⱼ": "j", "ₖ": "k",
+               "ₗ": "l", "ₘ": "m", "ₙ": "n", "ₒ": "o", "ₚ": "p", "ᵣ": "r",
+               "ₛ": "s", "ₜ": "t", "ᵤ": "u", "ᵥ": "v", "ₓ": "x"}
 _SUP_DIGITS = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4",
-               "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9"}
+               "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9",
+               "⁺": "+", "⁻": "−", "⁼": "=", "⁽": "(", "⁾": ")",
+               "ⁿ": "n", "ⁱ": "i"}
+
+UNICODE_SCRIPTS = set(_SUB_DIGITS) | set(_SUP_DIGITS)
+
+# 内嵌数学字体（Latin Modern Math 子集）覆盖的字符：不在里面的常见关系符（≫ ≪ ≦ ≧ …）
+# 走 <mtext>（正文手写体 DeckText 有这些字形），否则会回退到系统字体。
+# 子集由 scripts/make_mathfont.py 的 CHARS 决定，这里直接复用，避免两份清单漂移。
+try:  # pragma: no cover - 只是取常量
+    from make_mathfont import CHARS as _MATH_SUBSET
+except Exception:  # noqa: BLE001 - 取不到就退回保守集合（ASCII + 希腊 + 常用运算符）
+    _MATH_SUBSET = set(chr(c) for c in range(0x20, 0x7F)) | set(GREEK) | set(
+        "−–—×÷·⋅±∓≤≥≠≈≡≃≅∝∞∂∆∑∏∫√°µΩ′″…∈∉⊂⊃∪∩∖∀∃∅→←↔⇒⇔")
+MATH_SUBSET = set(_MATH_SUBSET)
+
+_ESC_MAP = {"&lt;": "<", "&gt;": ">", "&amp;": "&", "&quot;": '"', "&#39;": "'"}
+
+
+def _unescape(text: str) -> str:
+    for entity, char in _ESC_MAP.items():
+        text = text.replace(entity, char)
+    return text
 
 
 def normalize(expr: str) -> str:
@@ -256,24 +218,382 @@ def normalize(expr: str) -> str:
     return "".join(out)
 
 
-def math(expr: str, syms: list[str] | None = None) -> str:
-    """把一行式子排成 HTML。变量自动包 <var data-sym="j_0">（式图绑定要用）。"""
-    return f'<span class="mth">{_render_tokens(_tokenize(normalize(expr)), 0)}</span>'
+# ---- 解析：字符串 → 节点树 ------------------------------------------------
+
+# 节点是 (kind, payload)：
+#   ("mi", 文本) / ("mn", 文本) / ("mo", 文本) / ("mtext", 文本)
+#   ("mrow", [子节点]) / ("mfrac", 分子节点, 分母节点) / ("msqrt", 参数节点)
+#   ("msub", 底, 下标) / ("msup", 底, 上标) / ("msubsup", 底, 下标, 上标)
 
 
-MATH_CSS = """  .mth { font-family: var(--math); white-space: nowrap; }
-  .mth .scr { font-size: .7em; line-height: 0; position: relative; display: inline-block; }
-  .mth .scr.sub { top: .2em; }
-  .mth .scr.sup { top: -.42em; }
-  .mth .scr .scr { font-size: .72em; }
-  .mth .scr .scr.sup { top: -.3em; }
-  .mth .scr .scr.sub { top: .16em; }
-  .mth .rel { margin: 0 .22em; }
-  .mth .op { margin: 0 .16em; }
-  .mth .punct { margin-right: .12em; }
-  .mth .slash { margin: 0 .03em; }
-  .mth .fn { font-style: normal; margin-right: .12em; }
-  .mth var { font-style: normal; }
+class _Parser:
+    def __init__(self, expr: str) -> None:
+        self.src = expr
+        self.i = 0
+
+    def parse(self) -> list[tuple]:
+        return self._seq(stop="")
+
+    # -- 基础 --
+    def _peek(self) -> str:
+        return self.src[self.i] if self.i < len(self.src) else ""
+
+    def _skip_space(self) -> None:
+        while self.i < len(self.src) and self.src[self.i].isspace():
+            self.i += 1
+
+    def _braced(self) -> str:
+        """吃掉一个 {…}（或单字符），返回里面的原文。"""
+        self._skip_space()
+        if self._peek() == "{":
+            depth, j = 1, self.i + 1
+            while j < len(self.src) and depth:
+                if self.src[j] == "{":
+                    depth += 1
+                elif self.src[j] == "}":
+                    depth -= 1
+                j += 1
+            inner = self.src[self.i + 1:j - 1]
+            self.i = j
+            return inner
+        if self.i < len(self.src):
+            ch = self.src[self.i]
+            self.i += 1
+            return ch
+        return ""
+
+    def _script_arg(self, kind: str) -> str:
+        """上下标的实参：{…} 整组；否则下标吃字母数字连写（E_eq、b_app），上标吃一个数字。"""
+        self._skip_space()
+        if self._peek() == "{":
+            return self._braced()
+        j = self.i
+        if kind == "_":
+            while j < len(self.src) and re.match(r"[A-Za-z0-9]", self.src[j]):
+                j += 1
+        else:
+            while j < len(self.src) and (self.src[j].isdigit() or
+                                         (j == self.i and self.src[j] in "+−-⁺⁻")):
+                j += 1
+            if j == self.i:
+                j = self.i + 1
+        arg = self.src[self.i:j]
+        self.i = j
+        return arg
+
+    def _group(self, text: str) -> tuple:
+        nodes = _Parser(text).parse()
+        if len(nodes) == 1:
+            return nodes[0]
+        return ("mrow", nodes)
+
+    def _script_group(self, text: str) -> tuple:
+        """上下标实参：多字母是「标签」（eq / ref / app）→ 一个正体 <mi>；否则照常解析。"""
+        if re.fullmatch(r"[A-Za-z]{2,}", text):
+            return ("mi", text)
+        return self._group(text)
+
+    # -- 主循环 --
+    def _seq(self, stop: str) -> list[tuple]:
+        nodes: list[tuple] = []
+        while self._step(nodes, stop):
+            pass
+        return nodes
+
+    def _step(self, nodes: list[tuple], stop: str) -> bool:
+        """吃一个 token 追加到 nodes；遇到 stop / 结尾返回 False。"""
+        self._skip_space()
+        ch = self._peek()
+        if not ch or (stop and ch == stop):
+            return False
+        if ch == "{":
+            nodes.append(self._group(self._braced()))
+            return True
+        if ch == "\\":
+            nodes.append(self._command())
+            return True
+        if ch in "_^":
+            self.i += 1
+            script = self._script_group(self._script_arg(ch))
+            nodes[:] = self._attach(nodes, ch, script)
+            return True
+        if ch in FENCE_PAIRS:
+            close = FENCE_PAIRS[ch]
+            self.i += 1
+            inner = self._seq(stop=close)
+            if self._peek() == close:
+                self.i += 1
+            nodes.append(("mrow", [("mo", ch)] + inner + [("mo", close)]))
+            return True
+        if ch == "/":
+            self.i += 1
+            self._fraction(nodes)
+            return True
+        if ch in CJK_PUNCT or ("\u4e00" <= ch <= "\u9fff"):
+            j = self.i
+            while j < len(self.src) and (self.src[j] in CJK_PUNCT or
+                                         "\u4e00" <= self.src[j] <= "\u9fff"):
+                j += 1
+            nodes.append(("mtext", self.src[self.i:j]))
+            self.i = j
+            return True
+        if ch.isdigit():
+            j = self.i
+            while j < len(self.src) and (self.src[j].isdigit() or
+                                         (self.src[j] == "." and j + 1 < len(self.src)
+                                          and self.src[j + 1].isdigit())):
+                j += 1
+            nodes.append(("mn", self.src[self.i:j]))
+            self.i = j
+            return True
+        if (ch.isalpha() or ch in GREEK) and not ("\u4e00" <= ch <= "\u9fff"):
+            j = self.i
+            while j < len(self.src) and (self.src[j].isalpha() or self.src[j] in GREEK) \
+                    and not ("\u4e00" <= self.src[j] <= "\u9fff"):
+                j += 1
+            run = self.src[self.i:j]
+            prev = nodes[-1] if nodes else None
+            nodes.extend(self._letters(run, prev))
+            self.i = j
+            # E° / E°′：度数符号贴在符号上，不当独立算符（否则 MathML 会在中间加空格）
+            while self.i < len(self.src) and self.src[self.i] == "°" and len(run) == 1:
+                nodes[-1] = ("msup", nodes[-1], ("mo", "°"))
+                self.i += 1
+            return True
+        nodes.append(self._symbol(ch))
+        self.i += 1
+        return True
+
+    # -- 斜杠：真分式 → mfrac；量纲写法 → 保留 / --
+    def _fraction(self, nodes: list[tuple]) -> None:
+        """`a/b` 的两条路：两侧都是单位词则留斜杠，否则排成二维 <mfrac>。
+
+        分子 = 斜杠前那一项（含 2.303RT 这种隐式/显式乘法链）；
+        分母 = 斜杠后到加减/关系符为止的整项（Δlog₁₀ j、α_aF 都是整组）。
+        """
+        numerator = self._pop_operand_run(nodes)
+        denominator = self._term()
+        if _is_unit_expr(numerator) and _is_unit_expr([denominator]):
+            nodes.extend(numerator)
+            nodes.append(("mo", "/"))
+            nodes.append(denominator)
+            return
+        nodes.append(("mfrac", _as_node(numerator), denominator))
+
+    @staticmethod
+    def _pop_operand_run(nodes: list[tuple]) -> list[tuple]:
+        """从已解析的节点尾部取出一个「项」当分子（会从 nodes 里删除）。"""
+        run: list[tuple] = []
+        while nodes and (_is_operand(nodes[-1])
+                         or (nodes[-1][0] == "mo" and nodes[-1][1] in MULT_JOIN)):
+            run.insert(0, nodes.pop())
+        return run
+
+    def _term(self) -> tuple:
+        """往前读一个「项」当分母：遇到加减/关系符/右括号/中文标点/结尾就停。"""
+        nodes: list[tuple] = []
+        while True:
+            self._skip_space()
+            ch = self._peek()
+            # 中文注释是散文，不能当分母的一部分（否则 j/j_0 偏 0.4 个 dec 会被吞进分母）
+            if not ch or ch in TERM_STOP or _has_cjk(ch):
+                break
+            if not self._step(nodes, stop=""):
+                break
+        return _as_node(nodes)
+
+    def _command(self) -> tuple:
+        for name, handler in (("\\text{", self._text), ("\\frac{", self._frac),
+                              ("\\sqrt{", self._sqrt)):
+            if self.src.startswith(name, self.i):
+                return handler()
+        # 未知命令：原样当运算符
+        j = self.i + 1
+        while j < len(self.src) and self.src[j].isalpha():
+            j += 1
+        raw = self.src[self.i:j]
+        self.i = j
+        return ("mo", raw)
+
+    def _text(self) -> tuple:
+        body = self._braced()
+        return ("mtext", body)
+
+    def _frac(self) -> tuple:
+        self.i += len("\\frac")          # 跳过命令本身，留下 {
+        numerator = self._braced()
+        denominator = self._braced()
+        return ("mfrac", self._group(numerator), self._group(denominator))
+
+    def _sqrt(self) -> tuple:
+        self.i += len("\\sqrt")
+        body = self._braced()
+        return ("msqrt", self._group(body))
+
+    # -- 上下标：挂到前一个节点上 --
+    def _attach(self, nodes: list[tuple], kind: str, script: tuple) -> list[tuple]:
+        if not nodes:
+            base: tuple = ("mrow", [])
+        else:
+            base = nodes.pop()
+        if base[0] == "msub" and kind == "^":
+            return nodes + [("msubsup", base[1], base[2], script)]
+        if base[0] == "msup" and kind == "_":
+            return nodes + [("msubsup", base[1], script, base[2])]
+        return nodes + [("msub" if kind == "_" else "msup", base, script)]
+
+    # -- 字母连写：函数名整段正体，单位词走 mtext，其余逐字母 <mi> --
+    def _letters(self, run: str, prev: tuple | None = None) -> list[tuple]:
+        out: list[tuple] = []
+        i = 0
+        for label in LABELS:
+            if run == label:
+                return [("mi", label)]
+        # 单字母单位：跟在数字后面、且后面不再接字母（0.100 V / 300 K）
+        if (len(run) == 1 and run in SINGLE_UNITS
+                and prev is not None and prev[0] in ("mn", "mtext")):
+            return [("mtext", run)]
+        while i < len(run):
+            label = next((lb for lb in LABELS if run.startswith(lb, i)), None)
+            if label:
+                out.append(("mi", label))
+                i += len(label)
+                continue
+            for fn in FUNCS:
+                if run.startswith(fn, i):
+                    out.append(("mi", ("fn", fn)))
+                    i += len(fn)
+                    break
+            else:
+                if run[i:i + 4] in UNITS:
+                    out.append(("mtext", run[i:i + 4]))
+                    i += 4
+                    continue
+                if run[i:i + 3] in UNITS:
+                    out.append(("mtext", run[i:i + 3]))
+                    i += 3
+                    continue
+                if run[i:i + 2] in UNITS:
+                    out.append(("mtext", run[i:i + 2]))
+                    i += 2
+                    continue
+                out.append(("mi", run[i]))
+                i += 1
+        return out
+
+    def _symbol(self, ch: str) -> tuple:
+        if ch not in MATH_SUBSET:
+            return ("mtext", ch)
+        if ch in RELATIONS or ch in BINARIES or ch in PUNCT or ch in FENCES or ch in "/%":
+            return ("mo", ch)
+        if ch in CJK_PUNCT or ("\u4e00" <= ch <= "\u9fff"):
+            return ("mtext", ch)
+        return ("mo", ch)
+
+
+def _mi_attrs(char: str) -> str:
+    """单字母变量的属性：正体字母（e/i/d、希腊大写）不加 data-sym（它们不是量）。"""
+    upright = char in UPRIGHT_LETTERS or char in GREEK_UPPER
+    attrs = ""
+    if not upright and _EMIT_SYM.get("on", True):
+        attrs += f' data-sym="{html.escape(char, quote=True)}"'
+    if upright:
+        attrs += ' mathvariant="normal"'
+    return attrs
+
+
+def _emit(node: tuple) -> str:
+    kind = node[0]
+    if kind == "mi":
+        payload = node[1]
+        if isinstance(payload, tuple):  # 函数名
+            return f"<mi>{html.escape(payload[1])}</mi>"
+        if len(payload) > 1:            # 多字母标识（标签）
+            return f"<mi>{html.escape(payload)}</mi>"
+        return f"<mi{_mi_attrs(payload)}>{html.escape(payload)}</mi>"
+    if kind in ("mn", "mo", "mtext"):
+        return f"<{kind}>{html.escape(node[1])}</{kind}>"
+    if kind == "mrow":
+        children = node[1]
+        if not children:
+            return "<mrow></mrow>"
+        out: list[str] = []
+        prev: tuple | None = None
+        for child in children:
+            # 「数 + 单位」之间补一个细空格：MathML 把 <mn>60.0</mn><mtext>mV</mtext>
+            # 当两个相邻原子直接拼，会渲染成 60.0mV（实测）
+            if (prev is not None and prev[0] == "mn" and child[0] == "mtext"
+                    and (child[1] in UNITS or child[1] in SINGLE_UNITS)):
+                out.append('<mspace width="0.17em"/>')
+            out.append(_emit(child))
+            prev = child
+        return "<mrow>" + "".join(out) + "</mrow>"
+    if kind == "mfrac":
+        return f"<mfrac>{_emit(node[1])}{_emit(node[2])}</mfrac>"
+    if kind == "msqrt":
+        return f"<msqrt>{_emit(node[1])}</msqrt>"
+    if kind == "msub":
+        return f"<msub>{_emit(node[1])}{_emit(node[2])}</msub>"
+    if kind == "msup":
+        return f"<msup>{_emit(node[1])}{_emit(node[2])}</msup>"
+    if kind == "msubsup":
+        return f"<msubsup>{_emit(node[1])}{_emit(node[2])}{_emit(node[3])}</msubsup>"
+    raise ValueError(f"未知节点类型 {kind}")
+
+
+_EMIT_SYM = {"on": True}
+
+
+def math(expr: str, syms=None, mark_syms: bool = True) -> str:
+    """把一行式子排成 Presentation MathML；mark_syms=True 时每个变量标 data-sym（式图绑定用）。
+
+    散文里的行内 <math>（标题、图注、推导表注释）不参与「符号 ↔ 图」绑定，
+    传 mark_syms=False，避免把 Faraday 常数这类只在注释里出现的字母算成孤儿符号。
+    """
+    _EMIT_SYM["on"] = bool(mark_syms)
+    try:
+        body = _emit(("mrow", _Parser(normalize(_unescape(expr))).parse()))
+    finally:
+        _EMIT_SYM["on"] = True
+    return ('<math xmlns="http://www.w3.org/1998/Math/MathML" display="inline">'
+            f"{body}</math>")
+
+
+# ---- 反解析：MathML → 可读文本（校验脚本比对用） -------------------------
+
+def _node_text(node: tuple) -> str:
+    kind = node[0]
+    if kind == "mi":
+        payload = node[1]
+        return payload[1] if isinstance(payload, tuple) else payload
+    if kind in ("mn", "mo", "mtext"):
+        return node[1]
+    if kind == "mrow":
+        return "".join(_node_text(child) for child in node[1])
+    if kind == "mfrac":
+        return f"{_node_text(node[1])}/{_node_text(node[2])}"
+    if kind == "msqrt":
+        return f"√{_node_text(node[1])}"
+    if kind == "msub":
+        return f"{_node_text(node[1])}_{_node_text(node[2])}"
+    if kind == "msup":
+        return f"{_node_text(node[1])}^{_node_text(node[2])}"
+    if kind == "msubsup":
+        return f"{_node_text(node[1])}_{_node_text(node[2])}^{_node_text(node[3])}"
+    return ""
+
+
+def plain(expr: str) -> str:
+    """DSL → 纯文本（把数据读回来核对时用）。"""
+    return _node_text(("mrow", _Parser(normalize(_unescape(expr))).parse()))
+
+
+# 公式元素自己的样式：字体只挂 math 元素；mtext（中文/单位）走正文手写体。
+# 运算符间距、上下标缩放与位移、分式与根式的高度全部交给 MathML 布局，
+# 这里不再出现 top / line-height 之类的定位（那是旧 span 方案的事）。
+MATH_CSS = """  math { font-family: var(--math); font-size: 1em; line-height: 1.25; }
+  math mtext { font-family: var(--text); font-size: .92em; }
+  math mi, math mn, math mo { white-space: nowrap; }
 """
 
 
@@ -282,3 +602,4 @@ if __name__ == "__main__":
 
     for line in sys.argv[1:] or ["j = j_0 e^{η/b_a}"]:
         print(math(line))
+        print(plain(line))

@@ -51,7 +51,14 @@ expect 1 "外链 CDN 被抓出" "$d/tafel-deck.html"
 d="$(fresh eq)"; sed -i 's/data-eq="2"/data-eq="1"/' "$d/tafel-deck.html"
 expect 1 "式号重复/不连续被抓出" "$d/tafel-deck.html"
 
-d="$(fresh banned)"; sed -i 's|<h1>把 60 mV/dec 代回同一条直线：η = 300 mV 时 j/j₀ = 10⁵</h1>|<h1>谢谢观看</h1>|' "$d/tafel-deck.html"
+d="$(fresh banned)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text, n = re.subn(r"<h1>[^<]*把 60 mV/dec.*?</h1>", "<h1>谢谢观看</h1>", text, count=1, flags=re.S)
+assert n, "找不到末页标题"
+path.write_text(text, encoding="utf-8")
+PYEOF
 expect 1 "「谢谢观看」被抓出" "$d/tafel-deck.html"
 
 d="$(fresh font)"; sed -i 's/font-size: 21px/font-size: 16px/' "$d/tafel-deck.html"
@@ -93,13 +100,27 @@ d="$(fresh pghidden)"; sed -i 's|\.pg { position: absolute;|.pg { display: none;
 expect 1 "页码被 display:none 藏掉被抓出" "$d/tafel-deck.html"
 
 # ---- 去自测 ---------------------------------------------------------------
-d="$(fresh quiz)"; sed -i 's|<h1>把 60 mV/dec 代回同一条直线：η = 300 mV 时 j/j₀ = 10⁵</h1>|<h1>自测：三道题</h1>|' "$d/tafel-deck.html"
+d="$(fresh quiz)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text, n = re.subn(r"<h1>[^<]*把 60 mV/dec.*?</h1>", "<h1>自测：三道题</h1>", text, count=1, flags=re.S)
+assert n, "找不到末页标题"
+path.write_text(text, encoding="utf-8")
+PYEOF
 expect 1 "出现「自测」被抓出" "$d/tafel-deck.html"
 
 d="$(fresh summary)"; sed -i 's|data-page="11" data-kind="calc"|data-page="11" data-kind="summary"|' "$d/tafel-deck.html"
 expect 1 "末页另起结论页（summary 已取消）被抓出" "$d/tafel-deck.html"
 
-d="$(fresh lasttitle)"; sed -i 's|<h1>把 60 mV/dec 代回同一条直线：η = 300 mV 时 j/j₀ = 10⁵</h1>|<h1>结论：斜率就是线性段的两条边</h1>|' "$d/tafel-deck.html"
+d="$(fresh lasttitle)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text, n = re.subn(r"<h1>[^<]*把 60 mV/dec.*?</h1>", "<h1>结论：斜率就是线性段的两条边</h1>", text, count=1, flags=re.S)
+assert n, "找不到末页标题"
+path.write_text(text, encoding="utf-8")
+PYEOF
 expect 1 "末页标题写成「结论：…」被抓出" "$d/tafel-deck.html"
 
 d="$(fresh lastkind)"; sed -i 's|data-page="11" data-kind="calc"|data-page="11" data-kind="theory"|' "$d/tafel-deck.html"
@@ -121,7 +142,17 @@ expect 0 "线性轴刻度写 100 不再被误判成 10ⁿ（LOG_TICK_RE 回归�
 d="$(fresh noaxis)"; sed -i 's| data-x="η" data-y="j" data-xscale="linear" data-yscale="log" data-anim="dim"| data-anim="dim"|' "$d/tafel-deck.html"
 expect 1 "图缺 data-x/data-y 声明被抓出" "$d/tafel-deck.html"
 
-d="$(fresh recast)"; sed -i 's|<p class="recast">横轴由 E 换成 η = E − E_eq（本例 E_eq = 0，刻度值不变，标签必须改）</p>||' "$d/tafel-deck.html"
+d="$(fresh recast)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+page = re.search(r'<section class="slide" data-page="6".*?</section>', text, re.S)
+assert page, "找不到第 6 页"
+body, n = re.subn(r'\s*<p class="recast">.*?</p>', "", page.group(0), count=1, flags=re.S)
+assert n, "找不到 recast"
+text = text[:page.start()] + body + text[page.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
 expect 1 "换坐标却没写 recast 被抓出" "$d/tafel-deck.html"
 
 d="$(fresh residual)"; sed -i 's|<figcaption>同一组数据，横轴换成过电位（示例数据）</figcaption>|<figcaption>E 0–0.4 V vs RHE（示例数据）</figcaption>|' "$d/tafel-deck.html"
@@ -332,7 +363,17 @@ expect 1 "C3：第 1 页不是 axioms 被抓出" "$d/tafel-deck.html"
 d="$(fresh c3b)"; sed -i 's|data-page="2" data-kind="formula" data-eq="P1"|data-page="2" data-kind="formula" data-eq="P1" data-anim="dim"|' "$d/tafel-deck.html"
 expect 1 "C3：预备段页带动画被抓出" "$d/tafel-deck.html"
 
-d="$(fresh c3c)"; sed -i 's|<p class="io">吃进：j \[mA/cm²\]（第 4 页读得到）→ 吐出：η \[mV\]</p>||' "$d/tafel-deck.html"
+d="$(fresh c3c)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+page = re.search(r'<section class="slide" data-page="2".*?</section>', text, re.S)
+assert page, "找不到第 2 页"
+body, n = re.subn(r'\s*<p class="io">.*?</p>', "", page.group(0), count=1, flags=re.S)
+assert n, "找不到 io 行"
+text = text[:page.start()] + body + text[page.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
 expect 1 "C3：P 页缺 .io 行（吃进/吐出）被抓出" "$d/tafel-deck.html"
 
 d="$(fresh c3d)"; sed -i 's|data-stop="正文最后一次代入这条式在第 7 页取纵轴；再往下是 α 的物理来源，不推"||' "$d/tafel-deck.html"
@@ -352,7 +393,17 @@ PY
 expect 1 "C3：P 号不连号被抓出" "$d/tafel-deck.html"
 
 # ---- C4 公理链 -------------------------------------------------------------
-d="$(fresh c4a)"; sed -i 's|<tr><td>(1.1)</td><td>j = j₀\[exp(α_aFη/RT) − exp(−α_cFη/RT)\]</td><td>A3</td></tr>|<tr><td>(1.1)</td><td>j = j₀[exp(α_aFη/RT) − exp(−α_cFη/RT)]</td><td>Tafel 方程</td></tr>|' "$d/tafel-deck.html"
+d="$(fresh c4a)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+block = re.search(r'<details class="deriv" data-eq="P1".*?</details>', text, re.S)
+assert block, "找不到 P1 推导块"
+body, n = re.subn(r"<td>A3</td>", "<td>Tafel 方程</td>", block.group(0), count=1)
+assert n, "找不到首步依据 A3"
+text = text[:block.start()] + body + text[block.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
 expect 1 "C4：P1 首步依据写成「Tafel 方程」（推论当公理）被抓出" "$d/tafel-deck.html"
 
 d="$(fresh c4b)"; sed -i 's|data-axiom="A3" data-stop|data-axiom="A9" data-stop|' "$d/tafel-deck.html"
@@ -480,6 +531,173 @@ PY
 "$PY" "$CHECK" "$d/tafel-deck.html" >"$tmp/out.txt" 2>&1
 if grep -q "标了 \[约定\] 却写了" "$tmp/out.txt"; then ok "C8c：[约定] 里写「实测得到」被提示复核"; else bad "C8c 未提示"; fi
 
+# ---- C9–C11 MathML：公式必须是结构化的 <math> ----------------------------
+d="$(fresh mml_span)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text = text.replace('<p>无背景电流', '<p><span class="mth"><var data-sym="j">j</var></span> 无背景电流', 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C10a：公式退回 .mth/.scr 定位 span 被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_html_in_math)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text = text.replace('<mo>=</mo>', '<mo>=</mo><span>j</span>', 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C9a：<math> 里混进 HTML 元素（span）被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_twomath)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+match = re.search(r'(<span class="expr">)(.*?)(</span>)', text, re.S)
+assert match
+inner = match.group(2)
+text = text[:match.start()] + match.group(1) + inner + inner + match.group(3) + text[match.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C9b：一个 .expr 里塞两个 <math> 被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_mtext)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+match = re.search(r'<span class="expr"><math.*?</math></span>', text, re.S)
+assert match
+new = ('<span class="expr"><math xmlns="http://www.w3.org/1998/Math/MathML">'
+       '<mtext>b = Δη / Δlog j</mtext></math></span>')
+text = text[:match.start()] + new + text[match.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C9c：整条式子塞进一个 <mtext>（没分层）被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_semantics)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text = text.replace('<mrow><mi', '<semantics><mrow><mi', 1).replace('</mrow></math>', '</mrow></semantics></math>', 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C9d：只有 semantics/annotation 层的 MathML 被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_unicode)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text = text.replace('<p>无背景电流', '<p>x² 与 η⁻¹ 写在正文里，无背景电流', 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C11a：公式外残留 Unicode 上下标（x²、η⁻¹）被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_sub)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+match = re.search(r'<details class="deriv" data-eq="1".*?</details>', text, re.S)
+assert match
+body = re.sub(r'(<tr><td>\(1\.1\)</td><td>).*?(</td>)', r'\1T<sub>0</sub> = 300 K\2',
+              match.group(0), count=1, flags=re.S)
+assert body != match.group(0)
+text = text[:match.start()] + body + text[match.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C9e：推导式子列还在用 <sub> 平铺被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_mathjax)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+text = text.replace('<main id="deck">',
+                    '<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>'
+                    '<main id="deck">', 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C10b：引 MathJax / polyfill 被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_img)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+match = re.search(r'<span class="expr"><math.*?</math></span>', text, re.S)
+assert match
+text = text[:match.start()] + '<span class="expr"><img alt="b = Δη" src="data:image/png;base64,iVBORw0KGgo="></span>' + text[match.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C10c：用图片顶替公式被抓出" "$d/tafel-deck.html"
+
+d="$(fresh mml_nomath)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF'
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+match = re.search(r'<span class="expr"><math.*?</math></span>', text, re.S)
+assert match
+text = text[:match.start()] + '<span class="expr">b = Δη / Δlog_{10} j</span>' + text[match.end():]
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C9f：公式退回纯文本（没有 <math>）被抓出" "$d/tafel-deck.html"
+
+# ---- C12 分式一律二维：真分式 <mfrac>，量纲写法留斜杠 ----------------------
+# 正例 1：量纲写法在 fixture 里就是斜杠（mA/cm²）
+if grep -q '<mtext>mA</mtext><mo>/</mo><msup><mtext>cm</mtext><mn>2</mn></msup>' "$FIX/tafel-deck.html"; then
+  ok "C12 正例：量纲写法 mA/cm² 保留斜杠"
+else
+  bad "C12 正例：量纲写法 mA/cm² 没保留斜杠"
+fi
+
+# 正例 2：真分式在 fixture 里就是 <mfrac>（Δη/Δlog₁₀ j 的整组分母）
+if grep -q '<mfrac><mrow><mi mathvariant="normal">Δ</mi><mi data-sym="η">η</mi></mrow><mrow><mi mathvariant="normal">Δ</mi><msub><mi>log</mi><mn>10</mn></msub><mi data-sym="j">j</mi></mrow></mfrac>' "$FIX/tafel-deck.html"; then
+  ok "C12 正例：真分式 Δη/Δlog₁₀ j 是 <mfrac>（分母整组）"
+else
+  bad "C12 正例：真分式 Δη/Δlog₁₀ j 没排成 <mfrac>"
+fi
+
+# 负例 1：真分式写成斜杠（j/j₀ → <mo>/</mo>）
+d="$(fresh frac_slash)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF' || bad "C12a 负例补丁没打上"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+good = '<mfrac><mi>j</mi><msub><mi>j</mi><mn>0</mn></msub></mfrac>'
+bad = '<mi>j</mi><mo>/</mo><msub><mi>j</mi><mn>0</mn></msub>'
+assert good in text, "找不到 j/j₀ 的 <mfrac>"
+text = text.replace(good, bad, 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C12a：真分式写成斜杠（j/j₀ 用 <mo>/</mo>）被抓出" "$d/tafel-deck.html"
+
+# 负例 2：分母只框一个 token（Δη/Δ + log₁₀ j 掉到分式外）
+d="$(fresh frac_token)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF' || bad "C12b 负例补丁没打上"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+good = ('<mfrac><mrow><mi mathvariant="normal">Δ</mi><mi>η</mi></mrow>'
+        '<mrow><mi mathvariant="normal">Δ</mi><msub><mi>log</mi><mn>10</mn></msub>'
+        '<mi>j</mi></mrow></mfrac>')
+bad = ('<mfrac><mrow><mi mathvariant="normal">Δ</mi><mi>η</mi></mrow>'
+       '<mi mathvariant="normal">Δ</mi></mfrac>'
+       '<msub><mi>log</mi><mn>10</mn></msub><mi>j</mi>')
+assert good in text, "找不到 Δη/Δlog₁₀ j 的 <mfrac>"
+text = text.replace(good, bad, 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C12b：分母只框一个 token（Δη/Δ + log₁₀ j 在外）被抓出" "$d/tafel-deck.html"
+
+# 负例 3：量纲词被改成 mfrac（mA/cm² 排成二维）
+d="$(fresh frac_unit)"
+"$PY" - "$d/tafel-deck.html" <<'PYEOF' || bad "C12c 负例补丁没打上"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text(encoding="utf-8")
+good = '<mtext>mA</mtext><mo>/</mo><msup><mtext>cm</mtext><mn>2</mn></msup>'
+bad = '<mfrac><mtext>mA</mtext><msup><mtext>cm</mtext><mn>2</mn></msup></mfrac>'
+assert good in text, "找不到 mA/cm² 的斜杠写法"
+text = text.replace(good, bad, 1)
+path.write_text(text, encoding="utf-8")
+PYEOF
+expect 1 "C12c：量纲词被改成 <mfrac>（mA/cm²）被抓出" "$d/tafel-deck.html"
+
 # ---- 体积 / 截图 -----------------------------------------------------------
 d="$(fresh big)"
 "$PY" - "$d/tafel-deck.html" <<'PY'
@@ -540,7 +758,7 @@ d="$(fresh noshots)"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-text = text.replace("</span></span></span>", "</span>对数</span></span>", 1)
+text = text.replace("<mi>j</mi>", "<mi>对数</mi>", 1)
 path.write_text(text, encoding="utf-8")
 PYEOF
 "$PY" "$CHECK" "$d/tafel-deck.html" >"$tmp/out.txt" 2>&1
@@ -615,6 +833,17 @@ JSON
   mkdir -p "$tmp/scaffold/shots"; : >"$tmp/scaffold/shots/deck-print.pdf"
   for n in 01 02 03; do : >"$tmp/scaffold/shots/p-$n.png"; done
   expect 0 "脚手架生成的骨架（axioms 页 + P1/P2 + 正文）直接过校验" "$tmp/scaffold/deck.html"
+  # 骨架默认路径就是二维：真分式是 <mfrac>，量纲写法仍是斜杠
+  if grep -q '<mfrac>' "$tmp/scaffold/deck.html"; then
+    ok "脚手架骨架里真分式默认就是 <mfrac>"
+  else
+    bad "脚手架骨架里真分式不是 <mfrac>"
+  fi
+  if grep -q '<mtext>mA</mtext><mo>/</mo><msup><mtext>cm</mtext><mn>2</mn></msup>' "$tmp/scaffold/deck.html"; then
+    ok "脚手架骨架里量纲写法 mA/cm² 仍是斜杠"
+  else
+    bad "脚手架骨架里量纲写法 mA/cm² 不是斜杠"
+  fi
 else
   bad "缺 scripts/scaffold.py"
 fi

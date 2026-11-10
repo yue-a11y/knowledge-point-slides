@@ -53,7 +53,7 @@ bash .pi/skills/knowledge-point-slides/tests/smoke.sh                           
 | 项 | 状态 |
 |---|---|
 | chrome-headless-shell | `~/.local/bin/chrome-headless-shell` → `~/.cache/pi-chrome/…`，`tools/shoot_deck.py` 用它出 PNG/PDF |
-| weasyprint | 交叉验证打印态页数（`weasyprint -p <deck>.html shots/deck-print.pdf`） |
+| weasyprint | **只用于页数交叉验证**：不支持 MathML（上下标拍平、分式塌成一行），不能当打印源（`weasyprint -p <deck>.html shots/deck-print.pdf`） |
 | pandoc 3.5 | `tools/pandoc/`（gitignore，144MB），只在需要可选 docx 时用 |
 
 ## 改技能
